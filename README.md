@@ -1,0 +1,359 @@
+# WalshMediaAnalytics
+
+Signed, batched analytics for Walsh Media iOS and Mac apps. The package queues events locally, HMAC-signs each flush, and `POST`s to `https://analytics.walshmedia.net.au/v1/ingest`.
+
+There is **no query API** for apps. The Worker only accepts ingest. Visiting the host in a browser redirects to the marketing site — clients must call `POST /v1/ingest`.
+
+This package is native only (`ios` / `macos`). Web apps should follow the ingest contract directly (see [Signing](#signing-you-do-not-do-this-yourself)).
+
+---
+
+## 1. Install
+
+The package currently lives next to AirBook. Drop it into another app the same way:
+
+1. Copy `Packages/WalshMediaAnalytics` into the other repo (or add this folder as a local package without copying).
+2. In Xcode: **File → Add Package Dependencies… → Add Local…** and select `WalshMediaAnalytics`.
+3. Add the **WalshMediaAnalytics** library to the iOS / Mac app target(s).
+
+Minimum platforms: iOS 17, macOS 14.
+
+Then start once at launch and track events:
+
+```swift
+import WalshMediaAnalytics
+
+Analytics.start(.fromInfoPlist())
+
+Analytics.track("app_open")
+Analytics.track("button_tap", ["screen": "home"])
+```
+
+`env` (`dev` / `testflight` / `prod`) is detected inside the package. You do not pass it unless you need to override.
+
+Call `Analytics.flushNow()` when the scene backgrounds so the last batch leaves before suspend:
+
+```swift
+.onChange(of: scenePhase) { _, phase in
+    if phase == .background { Analytics.flushNow() }
+}
+```
+
+Keep a thin per-app `AnalyticsService` (or similar) for named helpers — `flight_logged`, `purchase`, etc. The package should stay generic.
+
+---
+
+## 2. Required config
+
+### App slug (`X-App-Id`)
+
+Must match an **active** row in the analytics Worker. One slug per product, shared across that product’s iOS / Mac / web builds:
+
+| Slug | Product |
+|---|---|
+| `airbook` | AirBook |
+| `echomix` | EchoMix |
+| `cyoa` | CYOA |
+| `trackalog` | Trackalog |
+| `macrologiciq` | MacroLogicIQ |
+| `pointsy` | Pointsy |
+| `safepic` | SafePic |
+
+`appId` also namespaces Keychain / UserDefaults (`com.<appId>.analytics.install`, `<appId>.analytics.pendingEvents`). Use the real slug so installs stay stable. `airbook` keeps existing AirBook device IDs.
+
+### HMAC secret
+
+One secret per **app**, shared across iOS / Mac / web. Lives in `app-hmac-secrets.json` (gitignored) on the Worker side. Put the same value in the app binary via xcconfig → Info.plist — never hard-code it in source, and **never ship `ADMIN_TOKEN`** or call `/v1/admin/*` from an app.
+
+If the secret is empty or still a `$(ANALYTICS_HMAC_SECRET)` placeholder, events queue locally but **nothing is uploaded**. That is intentional for Debug builds without a secret.
+
+### Info.plist + xcconfig
+
+Recommended (same pattern as AirBook):
+
+**Info.plist**
+
+```xml
+<key>ANALYTICS_APPNAME</key>
+<string>$(ANALYTICS_APPNAME)</string>
+<key>ANALYTICS_HMAC_SECRET</key>
+<string>$(ANALYTICS_HMAC_SECRET)</string>
+```
+
+**xcconfig** — `ANALYTICS_APPNAME` is the ingest slug (`airbook`, `echomix`, …), not the display name:
+
+```
+ANALYTICS_APPNAME = echomix
+ANALYTICS_HMAC_SECRET = your-app-secret-here
+```
+
+Then:
+
+```swift
+Analytics.start(.fromInfoPlist())
+```
+
+The ingest URL is built into the package (`https://analytics.walshmedia.net.au/v1/ingest`). You can still pass `appId:` to `fromInfoPlist` to override the plist. You can also build `AnalyticsConfiguration` in code (tests, or apps that do not use xcconfig).
+
+---
+
+## 3. Settings
+
+`AnalyticsConfiguration`:
+
+| Field | Default | Purpose |
+|---|---|---|
+| `appId` | `ANALYTICS_APPNAME` | Slug above. Sent as `X-App-Id`. |
+| `ingestURL` | built into the package | `https://analytics.walshmedia.net.au/v1/ingest` |
+| `hmacSecret` | from plist | HMAC-SHA256 key. Empty → no flush. |
+| `platform` | `ios` or `macos` | Ingest `platform`. Do not send `web` from this package. |
+| `reportsCrashes` | `true` | Subscribe to MetricKit and emit `app_crash` / `app_hang` on a later launch. |
+| `environment` | built-in detector | Override only if you must force `dev` / `testflight` / `prod`. |
+| `userID` | `{ nil }` | Optional stable account id (e.g. CloudKit `userRecordName`). 1–128 chars. **Not** email or name. |
+
+Helpers:
+
+- `AnalyticsConfiguration.fromInfoPlist(userID:…)` — reads `ANALYTICS_APPNAME` / `ANALYTICS_HMAC_SECRET`; env is detected unless you pass `environment:`
+- `AnalyticsEnvironment.current()` — same detector, if the host app needs the channel elsewhere
+- `AnalyticsConfiguration.ingestEnvironment(fromSignInTier:)` — `development`/`dev` → `dev`, `testflight` → `testflight`, else `prod`
+
+Public API:
+
+```swift
+Analytics.start(_ configuration)
+Analytics.track(_ name: String, _ props: [String: AnalyticsPropValue] = [:])
+Analytics.trackHTTP(endpoint:statusCode:durationMs:timedOut:appResult:extra:logOnlyOnError:)
+Analytics.flushNow()
+```
+
+Prop values are `string` / `int` / `bool` only (`AnalyticsPropValue`). Event names are trimmed and must be 1–128 characters; invalid names are dropped.
+
+HTTP calls use a shared `http_call` event (see [HTTP calls](#http-calls)). Prefer `AnalyticsHTTP.data` / `AnalyticsHTTP.Stopwatch` over hand-rolling prop keys so every app lands in the same dashboard columns.
+
+---
+
+## 4. Event names
+
+Convention: **snake_case verb or noun_verb**. Put detail in `props`, not in the name.
+
+Suggested shared names:
+
+| Name | When | Useful props |
+|---|---|---|
+| `app_open` | Cold start and returning to `.active` | — |
+| `app_background` | Scene backgrounded (optional; flush already runs) | — |
+| `screen_view` | A screen became visible | `screen` |
+| `button_tap` | Primary controls | `screen`, `button` |
+| `purchase` | Successful IAP | `product` |
+| `error` | Handled failure you care about | `code`, `area` (no message dumps with PII) |
+| `http_call` | An outbound HTTP (or HTTP-like) request finished | `endpoint`, `http_status`, `duration_ms`, `timed_out`, `app_result` |
+| `app_crash` | MetricKit crash (automatic) | `exception_type`, `exception_code`, `signal`, `reason`, `version`, `stack` |
+| `app_hang` | MetricKit hang (automatic) | `hang_ms`, `version`, `stack` |
+
+Product-specific names are fine (`flight_logged`, `backup_created`). Keep them stable — the dashboard groups by exact string.
+
+**Do not** put PII in `name` or `props`: no email, person name, exact GPS, tokens, roster/employee IDs, or raw file paths. Prefer integer remote ids or coarse enums (`airline: 1`).
+
+Timestamps are Unix **seconds**. Each event gets a client UUID so a retried flush is stored once (`INSERT OR IGNORE` on `(app, id)`).
+
+---
+
+## HTTP calls
+
+Log outbound requests with **`http_call`**. The prop keys are fixed so AirBook, EchoMix, and the rest can share one query.
+
+| Prop | Type | When |
+|---|---|---|
+| `endpoint` | string | Stable id you choose (`naips.briefing`, `subscription.session`). Not a full URL (query strings often have tokens / PII). Max 128 chars. |
+| `http_status` | int | HTTP response code. Omit when there was no response. |
+| `duration_ms` | int | Round-trip time. **Omit when `timed_out` is true.** |
+| `timed_out` | bool | Always set. |
+| `app_result` | `success` / `error` | Optional. Use when HTTP 200 is not enough (`{"status":"error"}`, empty body, login rejected, …). |
+
+Drop-in for `URLSession`:
+
+```swift
+let (data, response) = try await AnalyticsHTTP.data(
+    for: request,
+    endpoint: "contact.submit"
+) { data, http in
+    AnalyticsHTTPAppResult.fromJSONStatus(data)
+        ?? ((200...299).contains(http.statusCode) ? .success : .error)
+}
+```
+
+High-volume assets (remote images) should pass `logOnlyOnError: true` so 2xx successes are skipped. Timeouts, transport errors, non-2xx statuses, and `app_result: .error` still emit:
+
+```swift
+try await AnalyticsHTTP.data(
+    from: imageURL,
+    endpoint: "airline.logo",
+    logOnlyOnError: true
+) { data, http in
+    guard (200...299).contains(http.statusCode) else { return .error }
+    return isValidImage(data) ? .success : .error
+}
+```
+
+For WKWebView, completion-handler sessions, or anything else you time yourself:
+
+```swift
+let http = AnalyticsHTTP.Stopwatch()
+do {
+    let result = try await fetchRoster()
+    http.track(endpoint: "jetstar.roster", appResult: .success)
+    return result
+} catch {
+    http.track(endpoint: "jetstar.roster", error: error)
+    throw error
+}
+```
+
+Pass `timedOut: true` on the stopwatch when your own timeout is not a `URLError.timedOut` (WKWebView navigation deadlines). Do not wrap the analytics ingest `URLSession` call — that would recurse.
+
+---
+
+## 5. What the package already does
+
+You do not implement signing, batching, or retries.
+
+**Flush when** the network is available **and** 20 events are queued, 60 seconds have passed, the app calls `flushNow()` (background), or `NWPathMonitor` reports the path is satisfied again. Offline: events stay in UserDefaults; **no HTTP**. Coming online (including next launch with connectivity) drains the whole queue in batches of at most 100 events / 256 KB (halves a batch if it is over the body cap).
+
+**HTTP**
+
+| Status | Package action |
+|---|---|
+| `202` | Drop those events and send the next batch until the queue is empty |
+| `429` / transport error while online | Keep them; exponential backoff (15s → 5 min) |
+| No network path | Keep them; do not retry until the path is satisfied |
+| `400` / `401` / `403` | Drop the batch (bad payload / bad HMAC / app disabled). Fix config; do not spin-retry. |
+
+The Worker also rate-limits **10 requests / minute / IP**. Office NAT shares an IP — prefer fewer, larger flushes.
+
+**Signing:** HMAC-SHA256 of the **exact raw body bytes**, lowercase hex, `X-Signature` header. The encoder uses sorted keys and no pretty-print so the bytes that are signed are the bytes that are sent. Do not re-serialize after signing.
+
+**Install id:** Keychain UUID per install (not IDFV-as-PII, not Apple ID). Fallback UserDefaults, then migrate into Keychain.
+
+**Crashes:** MetricKit diagnostics arrive on a **later launch**. Stacks are unsybolicated (`AirBook+0x1a2b`). Jetsam / some watchdog kills may not appear. This is not Crashlytics.
+
+**Limits (Worker):** body ≤ 256 KB; ≤ 100 events; each `props` JSON ≤ 8192 bytes; `device_id` / event `id` / `name` 1–128 chars.
+
+### Not for apps
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /v1/admin/export` | PC sync + `ADMIN_TOKEN` |
+| `POST /v1/admin/export/ack` | Delete synced rows after a pull |
+| `GET /v1/admin/stats` | Backlog size |
+
+Do not call these from iOS, Mac, or web clients.
+
+### Adding a new product
+
+1. Add the slug + HMAC secret on the Worker (`app-hmac-secrets.json` + D1 `active` app).
+2. Use that slug as `appId`.
+3. Ship the secret via xcconfig. Empty secret = local queue only.
+
+---
+
+## 6. Environment detection
+
+Ingest `env` is one of `dev`, `testflight`, or `prod`. It is **not** a privacy identifier — it only buckets events so TestFlight noise does not land in production dashboards.
+
+The package detects this itself (`AnalyticsEnvironment.current()`). Host apps should **not** hard-code `"prod"`. A single StoreKit flag is how TestFlight used to look like production (and the reverse). Detection ORs several signals and treats **any** sandbox hit as TestFlight, then caches the result for the process.
+
+| Order | Check | Result |
+|---|---|---|
+| 1 | `DISTRIBUTION_CHANNEL=direct` (Sparkle / notarized Mac) | `prod` |
+| 2 | Plist `ANALYTICS_ENV` or `AIRBOOK_SIGN_IN_TIER` (`dev` / `development` / `testflight` / `prod` / `production`) | that value |
+| 3 | `#if DEBUG` | `dev` |
+| 4 | Embedded profile contains `beta-reports-active` (`embedded.mobileprovision` or `embedded.provisionprofile`) | `testflight` |
+| 4 | App Store receipt file is named `sandboxReceipt` | `testflight` |
+| 4 | `AppTransaction.environment` is `.sandbox` or `.xcode` (local read first; `refresh()` only if needed, so offline still works) | `testflight` |
+| 4 | Any verified StoreKit `Transaction.currentEntitlements` is sandbox / Xcode | `testflight` |
+| 5 | Otherwise | `prod` |
+
+Mac App Store is `platform: macos` + `env: prod`. Leave the override empty unless you are debugging:
+
+```
+ANALYTICS_ENV =
+```
+
+Pass `environment:` on `AnalyticsConfiguration` only if you must force a value. AirBook uses the built-in detector.
+
+---
+
+## 7. Privacy policy and terms of service
+
+This is documentation for writing your app’s privacy policy / App Store answers, not legal advice. The host app is the data controller for whatever it chooses to track. Walsh Media operates the ingest service.
+
+### Where data goes
+
+Events are `POST`ed to **`https://analytics.walshmedia.net.au/v1/ingest`**. That host is a Walsh Media service running on **Cloudflare** (Cloudflare Workers and related Cloudflare infrastructure). Traffic therefore reaches Cloudflare’s network; Cloudflare may process connection metadata (including IP address) as part of providing HTTPS, DDoS protection, and the Worker’s **10 requests / minute / IP** rate limit.
+
+There is no client query API. Apps only send data; they do not read other users’ events back.
+
+Do not describe this as Apple Analytics, Google Analytics, or a third-party ad network. It is first-party product analytics operated by Walsh Media.
+
+### What the package always transmits (when a secret is configured)
+
+Each flush is one JSON batch:
+
+| Field | What it is | What it is not |
+|---|---|---|
+| `platform` | `ios` or `macos` | Device model / OS version |
+| `env` | `dev` / `testflight` / `prod` | A user identifier |
+| `device_id` | Random UUID generated on first launch, stored in the Keychain (UserDefaults fallback). Stable **per install**, namespaced by `appId` | IDFV, IDFA, Apple ID, email, or name. Reinstall (or a new `appId`) creates a new id |
+| `events[].id` | Random UUID so retries are deduplicated | A user identifier |
+| `events[].name` | Event name you passed to `track` (or `app_crash` / `app_hang`) | — |
+| `events[].ts` | Unix time in seconds | — |
+| `events[].props` | Optional string / int / bool map you passed | Omitted when empty |
+
+Headers: `X-App-Id` (product slug) and `X-Signature` (HMAC of the body — not a user secret).
+
+If `ANALYTICS_HMAC_SECRET` is empty, **nothing is uploaded**. Events may still sit in UserDefaults on device.
+
+### Optional `user_id`
+
+`user_id` is **off by default**. It is sent only if the host app supplies `userID:` (AirBook uses CloudKit `userRecordName`). Rules:
+
+- 1–128 characters; invalid values are dropped
+- Attached to the **batch**, not to each event
+- Must be a stable opaque account key (CloudKit record name, your own account UUID)
+- **Must not** be email, person name, phone number, or any other direct identifier
+
+If you pass `user_id`, say so in the privacy policy: you can join analytics events to an account across reinstalls / devices that share that account. If you omit it, events are install-scoped via `device_id` only.
+
+### What you can transmit (host-app responsibility)
+
+Anything you put in `track(_:_:)` names and props is stored as analytics. The package does not scan for PII. **Do not send** email, names, exact GPS, auth tokens, roster/employee IDs, file paths, or message contents. Prefer coarse enums and integer remote ids.
+
+With `reportsCrashes` (default **on**), MetricKit may later send:
+
+- `app_crash` — exception type/code, signal, truncated termination reason, app version, truncated unsybolicated stack (`Binary+0xoffset`)
+- `app_hang` — hang duration, version, same style of stack
+
+Stacks are not symbolicated and are truncated (~1.5 KB). Termination reasons can occasionally include path-like strings; they are still truncated. Turn this off with `reportsCrashes: false` if a given app should not collect crash diagnostics.
+
+### Suggested privacy-policy wording (adapt as needed)
+
+You can say that the app sends product-analytics events (feature use, and optionally crash/hang diagnostics) to Walsh Media at `analytics.walshmedia.net.au`, hosted on Cloudflare; that an install-scoped random id is used; that an optional account id may be included if the user is signed in to iCloud / your account system; and that you do not sell this data for advertising.
+
+### App Store nutrition labels
+
+Declare what you actually collect. Typical answers when using this package as designed:
+
+| Apple category | Usually |
+|---|---|
+| Product Interaction | Yes (event names / props you choose) |
+| Crash Data | Yes if `reportsCrashes` is left on |
+| User ID | Yes only if you pass `userID` |
+| Device ID | The install UUID is not IDFA. Treat as a product analytics identifier, not tracking across other companies’ apps |
+| Precise Location | No, unless **you** put coordinates in props |
+| Contact Info | No, unless **you** put it in props |
+
+Used for **App Functionality** / **Analytics**, not Third-Party Advertising. This package does not include a `PrivacyInfo.xcprivacy` manifest — add one on the **app** target if Apple requires it for these data types.
+
+### Terms of service
+
+If your ToS mentions third-party processors, list Walsh Media (analytics) and Cloudflare (hosting / edge). Users are not creating an account on the analytics host; the Worker only accepts signed ingest from your apps.
