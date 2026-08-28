@@ -50,10 +50,32 @@ public enum AnalyticsIngestCodec {
         return trimmed
     }
 
-    public static func signatureHex(secret: String, body: Data) -> String {
+    public static func signatureHex(secret: String, payload: Data) -> String {
         let key = SymmetricKey(data: Data(secret.utf8))
-        let mac = HMAC<SHA256>.authenticationCode(for: body, using: key)
+        let mac = HMAC<SHA256>.authenticationCode(for: payload, using: key)
         return mac.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Bytes signed for `POST /v1/ingest` when `X-Timestamp` is set: `{timestamp}.{rawBody}`.
+    public static func ingestSignedPayload(timestamp: Int, body: Data) -> Data {
+        var signed = Data(String(timestamp).utf8)
+        signed.append(Data(".".utf8))
+        signed.append(body)
+        return signed
+    }
+
+    /// Bytes signed for OTA config GETs: `config:GET:{fullPath}`.
+    /// `path` is the request path only (e.g. `/v1/config/myapp/manifest`), percent-encoded as sent.
+    public static func configSignedPayload(path: String) -> Data {
+        let normalized = path.hasPrefix("/") ? path : "/" + path
+        return Data("config:GET:\(normalized)".utf8)
+    }
+
+    /// `encodeURIComponent`-compatible path segment (used in `/v1/config/{appSlug}/…`).
+    public static func encodeURIComponent(_ string: String) -> String {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-_.!~*'()")
+        return string.addingPercentEncoding(withAllowedCharacters: allowed) ?? string
     }
 
     private struct IngestBody: Encodable {

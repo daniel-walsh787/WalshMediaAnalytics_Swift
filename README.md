@@ -1,8 +1,8 @@
 # WalshMediaAnalytics
 
-Signed, batched analytics for Walsh Media iOS and Mac apps. The package queues events locally, HMAC-signs each flush, and `POST`s to `https://analytics.walshmedia.net.au/v1/ingest`.
+Signed, batched analytics for Walsh Media iOS and Mac apps. The package queues events locally, HMAC-signs each flush, and `POST`s to `https://analytics.walshmedia.net.au/v1/ingest`. The same HMAC also fetches **OTA feature flags and files** (`GET /v1/config/…`).
 
-There is **no query API** for apps. The Worker only accepts ingest. Visiting the host in a browser redirects to the marketing site — clients must call `POST /v1/ingest`.
+There is **no event query API** for apps. Visiting the host in a browser redirects to the marketing site — clients must call `POST /v1/ingest` (and, if you use OTA, the config GETs below).
 
 This package is native only (`ios` / `macos`). Web apps should follow the ingest contract directly (see [Signing](#signing-you-do-not-do-this-yourself)).
 
@@ -10,10 +10,10 @@ This package is native only (`ios` / `macos`). Web apps should follow the ingest
 
 ## 1. Install
 
-The package currently lives next to AirBook. Drop it into another app the same way:
+Add the Swift package from GitHub:
 
-1. Copy `Packages/WalshMediaAnalytics` into the other repo (or add this folder as a local package without copying).
-2. In Xcode: **File → Add Package Dependencies… → Add Local…** and select `WalshMediaAnalytics`.
+1. In Xcode: **File → Add Package Dependencies…**
+2. Enter `https://github.com/daniel-walsh787/WalshMediaAnalytics_Swift.git`
 3. Add the **WalshMediaAnalytics** library to the iOS / Mac app target(s).
 
 Minimum platforms: iOS 17, macOS 14.
@@ -80,7 +80,7 @@ Recommended (same pattern as AirBook):
 <string>$(ANALYTICS_HMAC_SECRET)</string>
 ```
 
-**xcconfig** — `ANALYTICS_APPNAME` is the ingest slug (`airbook`, `echomix`, …), not the display name:
+**xcconfig** — `ANALYTICS_APPNAME` is the ingest slug (`airbook`, `echomix`, …), not the display name. OTA feature flags and files use these same two keys; you do **not** add a tenant slug to xcconfig (the worker returns `tenant_slug` on the manifest).
 
 ```
 ANALYTICS_APPNAME = echomix
@@ -124,11 +124,63 @@ Analytics.start(_ configuration)
 Analytics.track(_ name: String, _ props: [String: AnalyticsPropValue] = [:])
 Analytics.trackHTTP(endpoint:statusCode:durationMs:timedOut:appResult:extra:logOnlyOnError:)
 Analytics.flushNow()
+Analytics.OTA.sync()
+Analytics.OTA.refreshFlags()
+Analytics.OTA.isEnabled("flag_key")
+Analytics.OTA.data(for: "path/in/manifest.csv")
 ```
 
 Prop values are `string` / `int` / `bool` only (`AnalyticsPropValue`). Event names are trimmed and must be 1–128 characters; invalid names are dropped.
 
 HTTP calls use a shared `http_call` event (see [HTTP calls](#http-calls)). Prefer `AnalyticsHTTP.data` / `AnalyticsHTTP.Stopwatch` over hand-rolling prop keys so every app lands in the same dashboard columns.
+
+---
+
+## OTA feature flags and files
+
+The same HMAC secret used for ingest also authenticates **OTA config** (`GET /v1/config/{appSlug}/manifest`). Feature flags are always HMAC-protected. Files may be public (CDN / edge-cached) or protected; follow the URLs on the manifest and only sign protected paths (`/v1/config/{appSlug}/files/…`).
+
+No extra Info.plist / xcconfig keys. Empty `ANALYTICS_HMAC_SECRET` disables OTA the same way it disables ingest flush.
+
+```swift
+Analytics.start(.fromInfoPlist())
+
+// Launch: one signed manifest GET, then only files whose etag changed.
+let snapshot = try await Analytics.OTA.sync()
+
+if Analytics.OTA.isEnabled("new_onboarding") {
+    // …
+}
+
+let theme = Analytics.OTA.string("theme") ?? "system"
+let csv = try await Analytics.OTA.data(for: "airlines.csv")
+if let logo = Analytics.OTA.cachedFileURL(for: "logos/QF.png") {
+    // already on disk from sync()
+    _ = logo
+}
+
+// Flags-only poll (no file downloads):
+_ = try await Analytics.OTA.refreshFlags()
+```
+
+`sync()` compares each file’s manifest etag to the local copy and skips the download when they match. When a file must be re-fetched it sends `If-None-Match: "{etag}"`; **304 Not Modified** keeps the cached bytes. A **304** on the manifest itself means flags and the file list are unchanged, so files are not contacted.
+
+Last-known flags and files persist on device (UserDefaults + Application Support) so they are readable offline after a previous successful sync. Call `Analytics.OTA.isEnabled` any time after `start` — it uses the cache immediately, even before `sync()` finishes.
+
+**HTTP (OTA)**
+
+| Status | Package action |
+|---|---|
+| `200` | Parse manifest / flags, or store file bytes and etag |
+| `304` | Keep the cached snapshot or file |
+| `401` / `403` | Throw `unauthorized` — fix slug / HMAC; do not retry in a loop |
+| `402` | Throw `quotaExceeded` — pause config reads (same credit wallet as ingest) |
+| `404` | Throw `notFound` |
+| Transport / other | Throw; previous cache is left in place |
+
+Signing for config GETs is HMAC-SHA256 of `config:GET:{path}` (the percent-encoded request path, e.g. `/v1/config/echomix/manifest`), sent as `X-App-Id` + `X-Signature`. This is not the ingest `{timestamp}.{body}` form.
+
+The tenant slug shown on the dashboard OTA Config tab (`walshmedia`, …) is **not** `ANALYTICS_APPNAME`. It only appears in public file URLs. Apps that call `sync()` never need to put it in xcconfig.
 
 ---
 
@@ -219,6 +271,8 @@ You do not implement signing, batching, or retries.
 
 **Flush when** the network is available **and** 20 events are queued, 60 seconds have passed, the app calls `flushNow()` (background), or `NWPathMonitor` reports the path is satisfied again. Offline: events stay in UserDefaults; **no HTTP**. Coming online (including next launch with connectivity) drains the whole queue in batches of at most 100 events / 256 KB (halves a batch if it is over the body cap).
 
+**OTA:** `Analytics.OTA.sync()` loads the signed manifest, caches flags, and downloads only files whose etag changed (or that return 304). See [OTA feature flags and files](#ota-feature-flags-and-files).
+
 **HTTP**
 
 | Status | Package action |
@@ -230,7 +284,7 @@ You do not implement signing, batching, or retries.
 
 The Worker also rate-limits **10 requests / minute / IP**. Office NAT shares an IP — prefer fewer, larger flushes.
 
-**Signing:** HMAC-SHA256 of the **exact raw body bytes**, lowercase hex, `X-Signature` header. The encoder uses sorted keys and no pretty-print so the bytes that are signed are the bytes that are sent. Do not re-serialize after signing.
+**Signing:** Send `X-Timestamp` (Unix seconds). HMAC-SHA256 of `{timestamp}.{rawBody}` (exact body bytes after the dot), lowercase hex, as `X-Signature`. The encoder uses sorted keys and no pretty-print so the bytes that are signed are the bytes that are sent. Do not re-serialize after signing. Legacy body-only HMAC (no `X-Timestamp`) still works on the Worker during migration; this package always uses the timestamped form.
 
 **Install id:** Keychain UUID per install (not IDFV-as-PII, not Apple ID). Fallback UserDefaults, then migrate into Keychain.
 
@@ -291,7 +345,7 @@ This is documentation for writing your app’s privacy policy / App Store answer
 
 Events are `POST`ed to **`https://analytics.walshmedia.net.au/v1/ingest`**. That host is a Walsh Media service running on **Cloudflare** (Cloudflare Workers and related Cloudflare infrastructure). Traffic therefore reaches Cloudflare’s network; Cloudflare may process connection metadata (including IP address) as part of providing HTTPS, DDoS protection, and the Worker’s **10 requests / minute / IP** rate limit.
 
-There is no client query API. Apps only send data; they do not read other users’ events back.
+There is no client query API for events. Apps send analytics; they do not read other users’ events back. OTA config is a separate, HMAC-signed read of **your** flags and files.
 
 Do not describe this as Apple Analytics, Google Analytics, or a third-party ad network. It is first-party product analytics operated by Walsh Media.
 
@@ -309,9 +363,11 @@ Each flush is one JSON batch:
 | `events[].ts` | Unix time in seconds | — |
 | `events[].props` | Optional string / int / bool map you passed | Omitted when empty |
 
-Headers: `X-App-Id` (product slug) and `X-Signature` (HMAC of the body — not a user secret).
+Headers: `X-App-Id` (product slug), `X-Timestamp` (Unix seconds for the signed payload), and `X-Signature` (HMAC of `{timestamp}.{body}` — not a user secret).
 
-If `ANALYTICS_HMAC_SECRET` is empty, **nothing is uploaded**. Events may still sit in UserDefaults on device.
+OTA config GETs to the same host send `X-App-Id` and `X-Signature` (HMAC of `config:GET:{path}`). They do not send `device_id` or event payloads. Cached flags and files stay on device.
+
+If `ANALYTICS_HMAC_SECRET` is empty, **nothing is uploaded**. Events may still sit in UserDefaults on device. OTA `sync()` throws `notConfigured`.
 
 ### Optional `user_id`
 

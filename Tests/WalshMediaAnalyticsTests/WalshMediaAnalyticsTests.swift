@@ -16,6 +16,11 @@ struct WalshMediaAnalyticsTests {
         #expect(AnalyticsConfiguration.normalizedAppId("") == nil)
         #expect(AnalyticsConfiguration.normalizedAppId("$(ANALYTICS_APPNAME)") == nil)
         #expect(AnalyticsConfiguration.defaultIngestURL?.host == "analytics.walshmedia.net.au")
+        #expect(AnalyticsConfiguration.defaultBaseURL?.host == "analytics.walshmedia.net.au")
+        #expect(
+            AnalyticsConfiguration.serviceBaseURL(from: AnalyticsConfiguration.defaultIngestURL)?.absoluteString
+                == "https://analytics.walshmedia.net.au"
+        )
     }
 
     @Test func ingestEnvironment_mapsSignInTier() {
@@ -43,7 +48,7 @@ struct WalshMediaAnalyticsTests {
         #expect(!AnalyticsEnvironment.hasTestFlightProvision("<key>get-task-allow</key><true/>"))
     }
 
-    @Test func ingestCodec_signsExactBodyBytes() throws {
+    @Test func ingestCodec_signsTimestampDotBody() throws {
         let events = [
             AnalyticsQueuedEvent(
                 id: "evt-1",
@@ -84,11 +89,18 @@ struct WalshMediaAnalyticsTests {
         )
         #expect(body == again)
 
-        let hex = AnalyticsIngestCodec.signatureHex(secret: "test-secret", body: body)
+        let timestamp = 1_755_000_100
+        let signed = AnalyticsIngestCodec.ingestSignedPayload(timestamp: timestamp, body: body)
+        #expect(signed == Data("\(timestamp).".utf8) + body)
+
+        let hex = AnalyticsIngestCodec.signatureHex(secret: "test-secret", payload: signed)
         #expect(hex.count == 64)
         #expect(hex == hex.lowercased())
-        #expect(hex == AnalyticsIngestCodec.signatureHex(secret: "test-secret", body: body))
-        #expect(hex != AnalyticsIngestCodec.signatureHex(secret: "other", body: body))
+        #expect(hex == AnalyticsIngestCodec.signatureHex(secret: "test-secret", payload: signed))
+        #expect(hex != AnalyticsIngestCodec.signatureHex(secret: "other", payload: signed))
+
+        let bodyOnlyHex = AnalyticsIngestCodec.signatureHex(secret: "test-secret", payload: body)
+        #expect(hex != bodyOnlyHex)
     }
 
     @Test func crashMapper_usesCrashVersusHangNames() {

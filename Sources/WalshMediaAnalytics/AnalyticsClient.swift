@@ -141,8 +141,11 @@ final class AnalyticsClient {
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.setValue(configuration.appId, forHTTPHeaderField: "X-App-Id")
+            let timestamp = Int(Date().timeIntervalSince1970)
+            let signed = AnalyticsIngestCodec.ingestSignedPayload(timestamp: timestamp, body: prepared.body)
+            request.setValue(String(timestamp), forHTTPHeaderField: "X-Timestamp")
             request.setValue(
-                AnalyticsIngestCodec.signatureHex(secret: configuration.hmacSecret, body: prepared.body),
+                AnalyticsIngestCodec.signatureHex(secret: configuration.hmacSecret, payload: signed),
                 forHTTPHeaderField: "X-Signature"
             )
             request.httpBody = prepared.body

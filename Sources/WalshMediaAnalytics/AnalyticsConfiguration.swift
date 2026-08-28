@@ -30,9 +30,25 @@ public struct AnalyticsConfiguration: Sendable {
     }
 
     public static let defaultIngestURL = URL(string: "https://analytics.walshmedia.net.au/v1/ingest")
+    public static let defaultBaseURL = URL(string: "https://analytics.walshmedia.net.au")
+
+    /// Origin used for OTA config (`/v1/config/…`). Derived from `ingestURL` when possible.
+    public var baseURL: URL? {
+        Self.serviceBaseURL(from: ingestURL) ?? Self.defaultBaseURL
+    }
 
     public var isConfigured: Bool {
         ingestURL != nil && !hmacSecret.isEmpty && !appId.isEmpty
+    }
+
+    /// Scheme + host (+ port) of an ingest URL, e.g. `https://analytics.walshmedia.net.au/v1/ingest` → origin.
+    public static func serviceBaseURL(from ingestURL: URL?) -> URL? {
+        guard let ingestURL else { return nil }
+        var components = URLComponents()
+        components.scheme = ingestURL.scheme
+        components.host = ingestURL.host
+        components.port = ingestURL.port
+        return components.url
     }
 
     public static var currentPlatform: String {
@@ -49,8 +65,9 @@ public struct AnalyticsConfiguration: Sendable {
     }
 
     /// Reads `ANALYTICS_APPNAME` and `ANALYTICS_HMAC_SECRET` from Info.plist
-    /// (xcconfig → Info.plist). Ingest URL is built into the package. An empty /
-    /// `$(…)` secret disables flushing.
+    /// (xcconfig → Info.plist). Ingest URL is built into the package. The same
+    /// pair authenticates OTA config. An empty / `$(…)` secret disables
+    /// flushing and OTA.
     public static func fromInfoPlist(
         appId: String? = nil,
         bundle: Bundle = .main,
