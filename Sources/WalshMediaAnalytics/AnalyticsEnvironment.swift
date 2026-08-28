@@ -19,6 +19,11 @@ public enum AnalyticsEnvironment {
         return cache.withLock({ $0 }) ?? resolved
     }
 
+    /// Last resolved `dev` / `testflight` / `prod`, if `current()` has already run.
+    public static func cached() -> String? {
+        cache.withLock { $0 }
+    }
+
     /// Maps StoreKit / Debug channel names onto ingest `env`.
     public static func ingestValue(fromSignInTier tier: String) -> String {
         switch tier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {

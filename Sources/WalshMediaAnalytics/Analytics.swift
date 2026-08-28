@@ -11,6 +11,7 @@ import Foundation
 enum AnalyticsRuntime {
     private static let lock = NSLock()
     private static var stored: AnalyticsConfiguration?
+    private static var storedEnvironment: String?
 
     static func setConfiguration(_ configuration: AnalyticsConfiguration) {
         lock.lock()
@@ -24,9 +25,23 @@ enum AnalyticsRuntime {
         return stored
     }
 
+    static func setEnvironment(_ environment: String) {
+        let normalized = AnalyticsEnvironment.ingestValue(fromSignInTier: environment)
+        lock.lock()
+        storedEnvironment = normalized
+        lock.unlock()
+    }
+
+    static func environment() -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedEnvironment
+    }
+
     static func resetForTests() {
         lock.lock()
         stored = nil
+        storedEnvironment = nil
         lock.unlock()
         AnalyticsOTAMemory.resetForTests()
     }
@@ -36,6 +51,10 @@ public enum Analytics {
     public static func start(_ configuration: AnalyticsConfiguration) {
         AnalyticsRuntime.setConfiguration(configuration)
         AnalyticsOTAMemory.preload(appId: configuration.appId)
+        Task {
+            let env = await configuration.environment()
+            AnalyticsRuntime.setEnvironment(env)
+        }
         Task { @MainActor in
             AnalyticsClient.shared.start(configuration)
         }

@@ -127,7 +127,8 @@ Analytics.flushNow()
 Analytics.OTA.sync()
 Analytics.OTA.sync(downloadFiles: .matching { $0 == "airlines.csv" })
 Analytics.OTA.refreshFlags()
-Analytics.OTA.isEnabled("flag_key")
+Analytics.OTA.flag("flag_key")
+Analytics.OTA.isEnabled("on_off_flag")
 Analytics.OTA.data(for: "path/in/manifest.csv")
 Analytics.OTA.data(for: "logos/QF.png", persist: .purgable)
 ```
@@ -159,7 +160,14 @@ if Analytics.OTA.isEnabled("new_onboarding") {
     // …
 }
 
-let theme = Analytics.OTA.string("theme") ?? "system"
+// Per-environment on/off: `{ "dev": true, "testflight": "yes", "prod": "off" }`
+if Analytics.OTA.isEnabled("airline_logos") {
+    // on in Debug / TestFlight, off in App Store — no per-env checks in the app
+}
+
+// Not an on/off flag — use generic access:
+let theme = Analytics.OTA.flag("theme")?.stringValue ?? "system"
+let themeAlt = Analytics.OTA.string("theme") ?? "system"
 let csv = try await Analytics.OTA.data(for: "airlines.csv")                 // Application Support
 let preview = try await Analytics.OTA.data(for: "logos/QF.png", persist: .purgable)  // Caches
 let flight = try await Analytics.OTA.data(for: "logos/QF.png", persist: .durable)     // promote if already in Caches
@@ -181,7 +189,27 @@ On a new manifest (not 304), paths that disappeared are pruned from both Applica
 | `.durable` (default) | Application Support, then Caches | Write Application Support; delete the Caches copy |
 | `.purgable` | Application Support, then Caches | Write Caches only when Application Support does not already have a current copy |
 
-Last-known flags persist in UserDefaults. Call `Analytics.OTA.isEnabled` any time after `start` — it uses the cache immediately, even before `sync()` finishes.
+Last-known flags persist in UserDefaults. Call `Analytics.OTA.flag` / `isEnabled` any time after `start` — they use the cache immediately, even before `sync()` finishes.
+
+**Feature flags.** Dashboard values are JSON. Use two accessors:
+
+| Method | Use when |
+|---|---|
+| `Analytics.OTA.flag("key")` | Any flag: string, number, object, array. Returns `AnalyticsOTAValue?`. Typed helpers: `string`, `int`, `bool`, `double`, `json`. |
+| `Analytics.OTA.isEnabled("key")` | The flag is an on/off switch (you know the schema). |
+
+`isEnabled` understands:
+
+- A single value: JSON `true` / `false`, or the strings `true`/`false`, `enabled`/`disabled`, `yes`/`no`, `on`/`off` (case-insensitive).
+- A three-channel object with **exactly** those keys, each an on/off token:
+
+```json
+{ "dev": true, "testflight": "yes", "prod": "off" }
+```
+
+The channel object is evaluated with the same `dev` / `testflight` / `prod` detector as ingest. You do not branch on environment in the app. A theme string like `"dark"` is **not** on/off — use `flag("theme")` / `string("theme")`. `{ "enabled": "yes", "variant": "b" }` still reads the `enabled` key from `isEnabled`.
+
+`sync()` and `refreshFlags()` resolve and cache environment before they return, so a check immediately after those calls is correct. `Analytics.start` also kicks off the same detector in the background.
 
 **HTTP (OTA)**
 

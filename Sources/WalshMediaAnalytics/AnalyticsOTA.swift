@@ -43,8 +43,9 @@ public enum AnalyticsOTAValue: Sendable, Equatable {
         return nil
     }
 
-    /// Coerces common dashboard shapes into an on/off switch.
-    public var isEnabled: Bool? {
+    /// On/off from a scalar: `true`/`false`, `enabled`/`disabled`, `yes`/`no`, `on`/`off`.
+    /// Objects are not interpreted here — use `environmentToggles` or `flag(_:)`.
+    public var onOffValue: Bool? {
         switch self {
         case .bool(let value):
             return value
@@ -53,16 +54,43 @@ public enum AnalyticsOTAValue: Sendable, Equatable {
         case .double(let value):
             return value != 0
         case .string(let value):
-            switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-            case "true", "yes", "1", "on":
-                return true
-            case "false", "no", "0", "off":
-                return false
-            default:
-                return nil
-            }
-        case .object(let object):
-            return object["enabled"]?.isEnabled
+            return Self.parseOnOff(value)
+        default:
+            return nil
+        }
+    }
+
+    /// `isEnabled`-style payload: a scalar on/off, or `{ "enabled": … }`.
+    public var isEnabled: Bool? {
+        if let onOff = onOffValue { return onOff }
+        guard case .object(let object) = self else { return nil }
+        if let nested = object["enabled"] {
+            return nested.onOffValue
+        }
+        return nil
+    }
+
+    /// Exact per-channel payload `{ "dev": …, "testflight": …, "prod": … }` whose values
+    /// are on/off tokens. Returns `nil` when the object has any other shape.
+    public var environmentToggles: [String: Bool]? {
+        guard case .object(let object) = self else { return nil }
+        guard Set(object.keys) == Self.environmentFlagKeys else { return nil }
+        var map: [String: Bool] = [:]
+        for key in Self.environmentFlagKeys {
+            guard let enabled = object[key]?.onOffValue else { return nil }
+            map[key] = enabled
+        }
+        return map
+    }
+
+    static let environmentFlagKeys: Set<String> = ["dev", "testflight", "prod"]
+
+    static func parseOnOff(_ raw: String) -> Bool? {
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "true", "enabled", "yes", "on", "1":
+            return true
+        case "false", "disabled", "no", "off", "0":
+            return false
         default:
             return nil
         }
@@ -87,8 +115,28 @@ public struct AnalyticsOTAFlags: Sendable, Equatable {
     public func double(_ key: String) -> Double? { values[key]?.doubleValue }
     public func string(_ key: String) -> String? { values[key]?.stringValue }
 
-    public func isEnabled(_ key: String, default fallback: Bool = false) -> Bool {
-        values[key]?.isEnabled ?? fallback
+    /// Raw JSON value for any flag (string, number, object, …). Prefer this unless the
+    /// flag is known to be an on/off switch.
+    public func flag(_ key: String) -> AnalyticsOTAValue? { values[key] }
+
+    /// On/off flags only. Accepts a single token (`true` / `enabled` / `yes` / `on`
+    /// and the false counterparts) or exactly `{ "dev": …, "testflight": …, "prod": … }`.
+    /// Other JSON (themes, limits, payloads) should use `flag(_:)`.
+    public func isEnabled(_ key: String, default fallback: Bool = false, environment: String? = nil) -> Bool {
+        guard let value = values[key] else { return fallback }
+        if let map = value.environmentToggles {
+            guard let env = resolvedEnvironment(environment) else { return fallback }
+            return map[env] ?? fallback
+        }
+        return value.isEnabled ?? fallback
+    }
+
+    private func resolvedEnvironment(_ explicit: String?) -> String? {
+        let raw = explicit
+            ?? AnalyticsRuntime.environment()
+            ?? AnalyticsEnvironment.cached()
+        guard let raw else { return nil }
+        return AnalyticsEnvironment.ingestValue(fromSignInTier: raw)
     }
 
     /// JSON object / array flags, re-encoded. `nil` when the key is missing or a scalar.
@@ -272,6 +320,7 @@ extension Analytics {
     /// Analytics.start(.fromInfoPlist())
     /// try await Analytics.OTA.sync()
     /// if Analytics.OTA.isEnabled("new_onboarding") { … }
+    /// let theme = Analytics.OTA.flag("theme")?.stringValue
     /// let csv = try await Analytics.OTA.data(for: "airlines.csv")
     /// ```
     public enum OTA {
@@ -288,6 +337,10 @@ extension Analytics {
             flags.isEnabled(key, default: fallback)
         }
 
+        /// Raw value for any flag. Use this for strings, numbers, and objects that are
+        /// not on/off switches.
+        public static func flag(_ key: String) -> AnalyticsOTAValue? { flags.flag(key) }
+
         public static func bool(_ key: String) -> Bool? { flags.bool(key) }
         public static func int(_ key: String) -> Int? { flags.int(key) }
         public static func double(_ key: String) -> Double? { flags.double(key) }
@@ -300,8 +353,10 @@ extension Analytics {
             using configuration: AnalyticsConfiguration? = nil,
             downloadFiles: AnalyticsOTADownloadFiles = .all
         ) async throws -> AnalyticsOTASnapshot {
-            try await AnalyticsOTAClient.shared.sync(
-                configuration: resolved(configuration),
+            let configuration = try resolved(configuration)
+            await cacheEnvironment(configuration)
+            return try await AnalyticsOTAClient.shared.sync(
+                configuration: configuration,
                 downloadFiles: downloadFiles
             )
         }
@@ -321,7 +376,9 @@ extension Analytics {
         public static func refreshFlags(
             using configuration: AnalyticsConfiguration? = nil
         ) async throws -> AnalyticsOTAFlags {
-            try await AnalyticsOTAClient.shared.refreshFlags(configuration: resolved(configuration))
+            let configuration = try resolved(configuration)
+            await cacheEnvironment(configuration)
+            return try await AnalyticsOTAClient.shared.refreshFlags(configuration: configuration)
         }
 
         /// Durable (Application Support) first, then purgable (Caches).
@@ -361,6 +418,11 @@ extension Analytics {
             if let configuration { return configuration }
             if let stored = AnalyticsRuntime.configuration() { return stored }
             throw AnalyticsOTAError.notConfigured
+        }
+
+        private static func cacheEnvironment(_ configuration: AnalyticsConfiguration) async {
+            let env = await configuration.environment()
+            AnalyticsRuntime.setEnvironment(env)
         }
     }
 }

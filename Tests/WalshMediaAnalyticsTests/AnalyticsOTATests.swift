@@ -96,6 +96,75 @@ struct AnalyticsOTATests {
         #expect(bare.isEnabled("missing", default: true))
     }
 
+    @Test func isEnabled_acceptsOnOffTokensAndChannelPayload() throws {
+        let scalars = try AnalyticsOTACodec.decodeFlags(
+            Data(#"{"a":true,"b":"true","c":"enabled","d":"yes","e":"on","f":false,"g":"false","h":"disabled","i":"no","j":"off","k":"dark","l":" YES ","m":"OFF"}"#.utf8)
+        )
+        #expect(flagsOn(scalars, "a"))
+        #expect(flagsOn(scalars, "b"))
+        #expect(flagsOn(scalars, "c"))
+        #expect(flagsOn(scalars, "d"))
+        #expect(flagsOn(scalars, "e"))
+        #expect(!flagsOn(scalars, "f"))
+        #expect(!flagsOn(scalars, "g"))
+        #expect(!flagsOn(scalars, "h"))
+        #expect(!flagsOn(scalars, "i"))
+        #expect(!flagsOn(scalars, "j"))
+        #expect(!flagsOn(scalars, "k"))
+        #expect(scalars.flag("k")?.stringValue == "dark")
+        #expect(scalars.flag("missing") == nil)
+        #expect(flagsOn(scalars, "l"))
+        #expect(!flagsOn(scalars, "m"))
+
+        let mixedChannels = try AnalyticsOTACodec.decodeFlags(
+            Data(#"{"logos":{"dev":true,"testflight":"yes","prod":false}}"#.utf8)
+        )
+        #expect(mixedChannels.isEnabled("logos", environment: "dev"))
+        #expect(mixedChannels.isEnabled("logos", environment: "testflight"))
+        #expect(!mixedChannels.isEnabled("logos", environment: "prod"))
+
+        let channels = try AnalyticsOTACodec.decodeFlags(
+            Data(#"{"logos":{"dev":"yes","testflight":"enabled","prod":"off"}}"#.utf8)
+        )
+        #expect(channels.isEnabled("logos", environment: "dev"))
+        #expect(channels.isEnabled("logos", environment: "testflight"))
+        #expect(!channels.isEnabled("logos", environment: "prod"))
+
+        AnalyticsRuntime.resetForTests()
+        #expect(!channels.isEnabled("logos"))
+        AnalyticsRuntime.setEnvironment("testflight")
+        #expect(channels.isEnabled("logos"))
+        AnalyticsRuntime.resetForTests()
+
+        func flagsOn(_ flags: AnalyticsOTAFlags, _ key: String) -> Bool {
+            flags.isEnabled(key, default: false)
+        }
+    }
+
+    @Test func isEnabled_ignoresObjectsThatAreNotExactChannelPayloads() throws {
+        let extraKey = try AnalyticsOTACodec.decodeFlags(
+            Data(#"{"logos":{"dev":true,"testflight":true,"prod":false,"staging":true}}"#.utf8)
+        )
+        #expect(extraKey.values["logos"]?.environmentToggles == nil)
+        #expect(!extraKey.isEnabled("logos", environment: "dev"))
+
+        let missingKey = try AnalyticsOTACodec.decodeFlags(
+            Data(#"{"logos":{"dev":true,"testflight":true}}"#.utf8)
+        )
+        #expect(missingKey.values["logos"]?.environmentToggles == nil)
+
+        let nested = try AnalyticsOTACodec.decodeFlags(
+            Data(#"{"experiment":{"enabled":true,"variant":"b"}}"#.utf8)
+        )
+        #expect(nested.isEnabled("experiment"))
+        #expect(nested.values["experiment"]?.environmentToggles == nil)
+
+        let nestedToken = try AnalyticsOTACodec.decodeFlags(
+            Data(#"{"experiment":{"enabled":"yes","variant":"b"}}"#.utf8)
+        )
+        #expect(nestedToken.isEnabled("experiment"))
+    }
+
     @Test func configuration_derivesOTABaseURLFromIngest() {
         #expect(AnalyticsConfiguration.serviceBaseURL(from: AnalyticsConfiguration.defaultIngestURL)?.absoluteString == "https://analytics.walshmedia.net.au")
         #expect(AnalyticsConfiguration.defaultBaseURL?.host == "analytics.walshmedia.net.au")
