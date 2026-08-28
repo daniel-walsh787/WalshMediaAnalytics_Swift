@@ -250,6 +250,182 @@ struct AnalyticsOTATests {
         }
     }
 
+    @Test func sync_none_doesNotTreatManifestEtagAsDiskEtag() async throws {
+        let harness = try OTATestHarness()
+        defer { harness.tearDown() }
+
+        OTAMockURLProtocol.stub(
+            path: "/v1/config/airbook/manifest",
+            status: 200,
+            data: Self.manifestJSON(fileEtag: "old"),
+            headers: ["ETag": "\"m1\""]
+        )
+        OTAMockURLProtocol.stub(
+            path: "/v1/config/walshmedia/airbook/files/airlines.csv",
+            status: 200,
+            data: Data("v1".utf8),
+            headers: ["ETag": "\"old\""]
+        )
+        OTAMockURLProtocol.stub(
+            path: "/v1/config/airbook/files/secret.json",
+            status: 200,
+            data: Data("{}".utf8),
+            headers: ["ETag": "\"sec-1\""]
+        )
+        _ = try await harness.client.sync(configuration: harness.configuration, downloadFiles: .all)
+        #expect(harness.store.diskEtag(for: "airlines.csv") == "old")
+
+        OTAMockURLProtocol.resetRequests()
+        OTAMockURLProtocol.stub(
+            path: "/v1/config/airbook/manifest",
+            status: 200,
+            data: Self.manifestJSON(fileEtag: "new"),
+            headers: ["ETag": "\"m2\""]
+        )
+        _ = try await harness.client.sync(configuration: harness.configuration, downloadFiles: .none)
+        #expect(harness.store.diskEtag(for: "airlines.csv") == "old")
+        #expect(harness.store.loadSnapshot()?.file(at: "airlines.csv")?.etag == "new")
+        #expect(!OTAMockURLProtocol.requests.contains { $0.url?.path.contains("/files/") == true })
+
+        OTAMockURLProtocol.stub(
+            path: "/v1/config/walshmedia/airbook/files/airlines.csv",
+            status: 200,
+            data: Data("v2".utf8),
+            headers: ["ETag": "\"new\""]
+        )
+        let fetched = try await harness.client.file(for: "airlines.csv", configuration: harness.configuration)
+        #expect(String(data: fetched.data, encoding: .utf8) == "v2")
+        #expect(harness.store.diskEtag(for: "airlines.csv") == "new")
+        #expect(OTAMockURLProtocol.requests.contains { $0.url?.path.hasSuffix("airlines.csv") == true })
+    }
+
+    @Test func sync_matching_downloadsOnlySelectedFiles() async throws {
+        let harness = try OTATestHarness()
+        defer { harness.tearDown() }
+
+        OTAMockURLProtocol.stub(
+            path: "/v1/config/airbook/manifest",
+            status: 200,
+            data: Self.manifestJSON(),
+            headers: ["ETag": "\"m1\""]
+        )
+        OTAMockURLProtocol.stub(
+            path: "/v1/config/walshmedia/airbook/files/airlines.csv",
+            status: 200,
+            data: Data("QF,VA\n".utf8),
+            headers: ["ETag": "\"file-1\""]
+        )
+        OTAMockURLProtocol.stub(
+            path: "/v1/config/airbook/files/secret.json",
+            status: 200,
+            data: Data("{}".utf8),
+            headers: ["ETag": "\"sec-1\""]
+        )
+
+        _ = try await harness.client.sync(
+            configuration: harness.configuration,
+            downloadFiles: .matching { $0 == "airlines.csv" }
+        )
+        #expect(harness.store.fileURL(for: "airlines.csv") != nil)
+        #expect(harness.store.fileURL(for: "secret.json") == nil)
+        #expect(OTAMockURLProtocol.requests.contains { $0.url?.path.hasSuffix("airlines.csv") == true })
+        #expect(!OTAMockURLProtocol.requests.contains { $0.url?.path.hasSuffix("secret.json") == true })
+    }
+
+    @Test func sync_none_prunesRemovedFilesButKeepsManifestPaths() async throws {
+        let harness = try OTATestHarness()
+        defer { harness.tearDown() }
+
+        OTAMockURLProtocol.stub(
+            path: "/v1/config/airbook/manifest",
+            status: 200,
+            data: Self.manifestJSON(),
+            headers: ["ETag": "\"m1\""]
+        )
+        OTAMockURLProtocol.stub(
+            path: "/v1/config/walshmedia/airbook/files/airlines.csv",
+            status: 200,
+            data: Data("v1".utf8),
+            headers: ["ETag": "\"file-1\""]
+        )
+        OTAMockURLProtocol.stub(
+            path: "/v1/config/airbook/files/secret.json",
+            status: 200,
+            data: Data("{}".utf8),
+            headers: ["ETag": "\"sec-1\""]
+        )
+        _ = try await harness.client.sync(configuration: harness.configuration, downloadFiles: .all)
+        #expect(harness.store.fileURL(for: "secret.json") != nil)
+
+        OTAMockURLProtocol.resetRequests()
+        OTAMockURLProtocol.stub(
+            path: "/v1/config/airbook/manifest",
+            status: 200,
+            data: Self.manifestJSONWithoutSecret(),
+            headers: ["ETag": "\"m2\""]
+        )
+        _ = try await harness.client.sync(configuration: harness.configuration, downloadFiles: .none)
+        #expect(harness.store.fileURL(for: "airlines.csv") != nil)
+        #expect(harness.store.diskEtag(for: "airlines.csv") == "file-1")
+        #expect(harness.store.fileURL(for: "secret.json") == nil)
+        #expect(!OTAMockURLProtocol.requests.contains { $0.url?.path.contains("/files/") == true })
+    }
+
+    @Test func persist_purgableWritesCachesAndDurablePromotes() async throws {
+        let harness = try OTATestHarness()
+        defer { harness.tearDown() }
+
+        OTAMockURLProtocol.stub(
+            path: "/v1/config/airbook/manifest",
+            status: 200,
+            data: Self.manifestJSON(),
+            headers: ["ETag": "\"m1\""]
+        )
+        _ = try await harness.client.sync(configuration: harness.configuration, downloadFiles: .none)
+
+        OTAMockURLProtocol.stub(
+            path: "/v1/config/walshmedia/airbook/files/airlines.csv",
+            status: 200,
+            data: Data("preview".utf8),
+            headers: ["ETag": "\"file-1\""]
+        )
+        let preview = try await harness.client.file(
+            for: "airlines.csv",
+            persist: .purgable,
+            configuration: harness.configuration
+        )
+        #expect(preview.persist == .purgable)
+        #expect(harness.store.fileURL(for: "airlines.csv", persist: .purgable) != nil)
+        #expect(harness.store.fileURL(for: "airlines.csv", persist: .durable) == nil)
+
+        let promoted = try await harness.client.file(
+            for: "airlines.csv",
+            persist: .durable,
+            configuration: harness.configuration
+        )
+        #expect(promoted.persist == .durable)
+        #expect(String(data: promoted.data, encoding: .utf8) == "preview")
+        #expect(harness.store.fileURL(for: "airlines.csv", persist: .durable) != nil)
+        #expect(harness.store.fileURL(for: "airlines.csv", persist: .purgable) == nil)
+
+        OTAMockURLProtocol.resetRequests()
+        let again = try await harness.client.file(
+            for: "airlines.csv",
+            persist: .purgable,
+            configuration: harness.configuration
+        )
+        #expect(again.persist == .durable)
+        #expect(!OTAMockURLProtocol.requests.contains { $0.url?.path.contains("/files/") == true })
+    }
+
+    @Test func prune_keepsSidecarsForManifestFiles() {
+        let store = AnalyticsOTADiskStore(appId: "airbook")
+        #expect(store.shouldKeep(relative: "logos/QF.png", manifestPaths: ["logos/QF.png"]))
+        #expect(store.shouldKeep(relative: "logos/QF.png.etag", manifestPaths: ["logos/QF.png"]))
+        #expect(!store.shouldKeep(relative: "logos/VA.png", manifestPaths: ["logos/QF.png"]))
+        #expect(!store.shouldKeep(relative: "logos/VA.png.etag", manifestPaths: ["logos/QF.png"]))
+    }
+
     private static func signature(for path: String, secret: String = "test-secret") -> String {
         AnalyticsIngestCodec.signatureHex(
             secret: secret,
@@ -281,17 +457,43 @@ struct AnalyticsOTATests {
             """.utf8
         )
     }
+
+    private static func manifestJSONWithoutSecret(fileEtag: String = "file-1") -> Data {
+        Data(
+            """
+            {
+              "tenant_slug": "walshmedia",
+              "flags": { "new_onboarding": true },
+              "files": [
+                {
+                  "path": "airlines.csv",
+                  "etag": "\(fileEtag)",
+                  "url": "https://analytics.walshmedia.net.au/v1/config/walshmedia/airbook/files/airlines.csv",
+                  "visibility": "public"
+                }
+              ]
+            }
+            """.utf8
+        )
+    }
 }
 
 private struct OTATestHarness {
     let client: AnalyticsOTAClient
     let configuration: AnalyticsConfiguration
     let cacheRoot: URL
+    let durableRoot: URL
+    let purgableRoot: URL
     let defaults: UserDefaults
     let suiteName: String
 
     var store: AnalyticsOTADiskStore {
-        AnalyticsOTADiskStore(appId: "airbook", defaults: defaults, cacheRoot: cacheRoot)
+        AnalyticsOTADiskStore(
+            appId: "airbook",
+            defaults: defaults,
+            durableRoot: durableRoot,
+            purgableRoot: purgableRoot
+        )
     }
 
     init() throws {
@@ -303,7 +505,10 @@ private struct OTATestHarness {
         }
         self.defaults = defaults
         cacheRoot = FileManager.default.temporaryDirectory.appendingPathComponent(suiteName, isDirectory: true)
-        try FileManager.default.createDirectory(at: cacheRoot, withIntermediateDirectories: true)
+        durableRoot = cacheRoot.appendingPathComponent("durable", isDirectory: true)
+        purgableRoot = cacheRoot.appendingPathComponent("purgable", isDirectory: true)
+        try FileManager.default.createDirectory(at: durableRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: purgableRoot, withIntermediateDirectories: true)
 
         let sessionConfiguration = URLSessionConfiguration.ephemeral
         sessionConfiguration.protocolClasses = [OTAMockURLProtocol.self]
@@ -313,7 +518,8 @@ private struct OTATestHarness {
         client = AnalyticsOTAClient(
             urlSession: session,
             defaults: defaults,
-            cacheRoot: cacheRoot
+            durableRoot: durableRoot,
+            purgableRoot: purgableRoot
         )
         configuration = AnalyticsConfiguration(
             appId: "airbook",

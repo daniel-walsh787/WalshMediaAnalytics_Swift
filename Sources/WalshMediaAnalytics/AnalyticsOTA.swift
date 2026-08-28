@@ -166,6 +166,36 @@ public struct AnalyticsOTACachedFile: Sendable, Equatable {
     public var data: Data
     public var contentType: String?
     public var notModified: Bool
+    public var persist: AnalyticsOTAPersist
+}
+
+/// Which OTA files `sync` should download now. Assets can stay lazy via `data(for:)`.
+public enum AnalyticsOTADownloadFiles: Sendable {
+    /// Every file in the manifest (default).
+    case all
+    /// Manifest and flags only. Does not fetch file bytes.
+    case none
+    /// Eager-cache matching paths; leave the rest for `data(for:)` / `file(for:)`.
+    case matching(@Sendable (String) -> Bool)
+
+    func shouldDownload(_ path: String) -> Bool {
+        switch self {
+        case .all:
+            return true
+        case .none:
+            return false
+        case .matching(let predicate):
+            return predicate(path)
+        }
+    }
+}
+
+/// Where file bytes are stored. Feature flags and the manifest snapshot stay in UserDefaults.
+public enum AnalyticsOTAPersist: Sendable, Equatable {
+    /// Application Support. Survives OS cache eviction. Default.
+    case durable
+    /// Caches. OS may delete. Disk etag is still stored so `If-None-Match` / 304 work.
+    case purgable
 }
 
 public enum AnalyticsOTAError: Error, Equatable, LocalizedError {
@@ -264,16 +294,26 @@ extension Analytics {
         public static func string(_ key: String) -> String? { flags.string(key) }
         public static func json(_ key: String) -> Data? { flags.json(key) }
 
-        /// HMAC-signed manifest, then download only files whose etag changed (`If-None-Match` / 304).
+        /// HMAC-signed manifest, then download files whose **disk** etag differs from the manifest.
         @discardableResult
         public static func sync(
             using configuration: AnalyticsConfiguration? = nil,
-            downloadFiles: Bool = true
+            downloadFiles: AnalyticsOTADownloadFiles = .all
         ) async throws -> AnalyticsOTASnapshot {
             try await AnalyticsOTAClient.shared.sync(
                 configuration: resolved(configuration),
                 downloadFiles: downloadFiles
             )
+        }
+
+        /// `true` → `.all`, `false` → `.none`. Prefer `AnalyticsOTADownloadFiles`.
+        @available(*, deprecated, message: "Use downloadFiles: .all or .none")
+        @discardableResult
+        public static func sync(
+            using configuration: AnalyticsConfiguration? = nil,
+            downloadFiles: Bool
+        ) async throws -> AnalyticsOTASnapshot {
+            try await sync(using: configuration, downloadFiles: downloadFiles ? .all : .none)
         }
 
         /// Lightweight flags-only GET. Does not touch cached files.
@@ -284,6 +324,7 @@ extension Analytics {
             try await AnalyticsOTAClient.shared.refreshFlags(configuration: resolved(configuration))
         }
 
+        /// Durable (Application Support) first, then purgable (Caches).
         public static func cachedFileURL(for path: String) -> URL? {
             guard let configuration = AnalyticsRuntime.configuration() else { return nil }
             return AnalyticsOTADiskStore(appId: configuration.appId).fileURL(for: path)
@@ -294,20 +335,26 @@ extension Analytics {
             return AnalyticsOTADiskStore(appId: configuration.appId).cachedFile(for: path)
         }
 
-        /// Returns cached bytes when the manifest etag matches; otherwise downloads with `If-None-Match`.
+        /// Returns cached bytes when the **disk** etag matches the manifest; otherwise downloads.
         public static func data(
             for path: String,
+            persist: AnalyticsOTAPersist = .durable,
             using configuration: AnalyticsConfiguration? = nil
         ) async throws -> Data {
-            try await file(for: path, using: configuration).data
+            try await file(for: path, persist: persist, using: configuration).data
         }
 
         @discardableResult
         public static func file(
             for path: String,
+            persist: AnalyticsOTAPersist = .durable,
             using configuration: AnalyticsConfiguration? = nil
         ) async throws -> AnalyticsOTACachedFile {
-            try await AnalyticsOTAClient.shared.file(for: path, configuration: resolved(configuration))
+            try await AnalyticsOTAClient.shared.file(
+                for: path,
+                persist: persist,
+                configuration: resolved(configuration)
+            )
         }
 
         private static func resolved(_ configuration: AnalyticsConfiguration?) throws -> AnalyticsConfiguration {

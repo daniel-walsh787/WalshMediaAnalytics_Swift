@@ -125,9 +125,11 @@ Analytics.track(_ name: String, _ props: [String: AnalyticsPropValue] = [:])
 Analytics.trackHTTP(endpoint:statusCode:durationMs:timedOut:appResult:extra:logOnlyOnError:)
 Analytics.flushNow()
 Analytics.OTA.sync()
+Analytics.OTA.sync(downloadFiles: .matching { $0 == "airlines.csv" })
 Analytics.OTA.refreshFlags()
 Analytics.OTA.isEnabled("flag_key")
 Analytics.OTA.data(for: "path/in/manifest.csv")
+Analytics.OTA.data(for: "logos/QF.png", persist: .purgable)
 ```
 
 Prop values are `string` / `int` / `bool` only (`AnalyticsPropValue`). Event names are trimmed and must be 1–128 characters; invalid names are dropped.
@@ -145,27 +147,41 @@ No extra Info.plist / xcconfig keys. Empty `ANALYTICS_HMAC_SECRET` disables OTA 
 ```swift
 Analytics.start(.fromInfoPlist())
 
-// Launch: one signed manifest GET, then only files whose etag changed.
-let snapshot = try await Analytics.OTA.sync()
+// Small apps: download every file whose disk etag changed.
+_ = try await Analytics.OTA.sync()
+
+// Larger catalogs: eager-cache config, leave assets lazy.
+_ = try await Analytics.OTA.sync(downloadFiles: .matching {
+    $0 == "airlines.csv" || $0 == "logos/list.json"
+})
 
 if Analytics.OTA.isEnabled("new_onboarding") {
     // …
 }
 
 let theme = Analytics.OTA.string("theme") ?? "system"
-let csv = try await Analytics.OTA.data(for: "airlines.csv")
-if let logo = Analytics.OTA.cachedFileURL(for: "logos/QF.png") {
-    // already on disk from sync()
-    _ = logo
-}
+let csv = try await Analytics.OTA.data(for: "airlines.csv")                 // Application Support
+let preview = try await Analytics.OTA.data(for: "logos/QF.png", persist: .purgable)  // Caches
+let flight = try await Analytics.OTA.data(for: "logos/QF.png", persist: .durable)     // promote if already in Caches
 
 // Flags-only poll (no file downloads):
 _ = try await Analytics.OTA.refreshFlags()
 ```
 
-`sync()` compares each file’s manifest etag to the local copy and skips the download when they match. When a file must be re-fetched it sends `If-None-Match: "{etag}"`; **304 Not Modified** keeps the cached bytes. A **304** on the manifest itself means flags and the file list are unchanged, so files are not contacted.
+`sync()` compares each file’s **disk** etag (a sidecar next to the file, e.g. `logos/QF.png.etag`) to the manifest. A manifest-only sync (`downloadFiles: .none`) updates the file list without pretending those bytes were downloaded. `data(for:)` / `file(for:)` then download when the disk etag and manifest etag differ. Re-fetches send `If-None-Match: "{etag}"`; **304** keeps the cached bytes and refreshes the sidecar. A **304** on the manifest itself means flags and the file list are unchanged, so files are not contacted.
 
-Last-known flags and files persist on device (UserDefaults + Application Support) so they are readable offline after a previous successful sync. Call `Analytics.OTA.isEnabled` any time after `start` — it uses the cache immediately, even before `sync()` finishes.
+`downloadFiles: Bool` still works (`true` → `.all`, `false` → `.none`) but is deprecated.
+
+On a new manifest (not 304), paths that disappeared are pruned from both Application Support and Caches. Paths still listed but never downloaded are left alone.
+
+**Persist** (host policy, not airline-specific):
+
+| `persist` | Read order | After a download |
+|---|---|---|
+| `.durable` (default) | Application Support, then Caches | Write Application Support; delete the Caches copy |
+| `.purgable` | Application Support, then Caches | Write Caches only when Application Support does not already have a current copy |
+
+Last-known flags persist in UserDefaults. Call `Analytics.OTA.isEnabled` any time after `start` — it uses the cache immediately, even before `sync()` finishes.
 
 **HTTP (OTA)**
 
@@ -271,7 +287,7 @@ You do not implement signing, batching, or retries.
 
 **Flush when** the network is available **and** 20 events are queued, 60 seconds have passed, the app calls `flushNow()` (background), or `NWPathMonitor` reports the path is satisfied again. Offline: events stay in UserDefaults; **no HTTP**. Coming online (including next launch with connectivity) drains the whole queue in batches of at most 100 events / 256 KB (halves a batch if it is over the body cap).
 
-**OTA:** `Analytics.OTA.sync()` loads the signed manifest, caches flags, and downloads only files whose etag changed (or that return 304). See [OTA feature flags and files](#ota-feature-flags-and-files).
+**OTA:** `Analytics.OTA.sync()` loads the signed manifest, caches flags, and downloads files whose disk etag changed (or that return 304). Use `downloadFiles: .matching` to eager-cache a subset. See [OTA feature flags and files](#ota-feature-flags-and-files).
 
 **HTTP**
 
