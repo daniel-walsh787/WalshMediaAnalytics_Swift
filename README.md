@@ -189,7 +189,7 @@ Notification actions from the dashboard:
 | Action | Behavior |
 |---|---|
 | Deep link | Opens a custom URL when the user taps the notification |
-| Show alert | Presents an in-app alert with configurable confirm/cancel; confirm can deep link or open a URL |
+| Show alert | Presents an in-app alert with optional cancel and confirm buttons (each can be enabled independently); confirm can deep link or open a URL |
 
 Token registration uses `POST /v1/push/register` with the same HMAC signing as ingest (`{timestamp}.{body}`).
 

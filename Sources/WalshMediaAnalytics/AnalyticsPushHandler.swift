@@ -76,30 +76,36 @@ final class AnalyticsPushHandler {
     }
 
     private func presentAlert(_ alert: [String: Any]) {
-        let title = alert["title"] as? String ?? ""
-        let body = alert["body"] as? String ?? ""
-        let cancelText = alert["cancel_text"] as? String ?? "Cancel"
-        let confirmText = alert["confirm_text"] as? String ?? "OK"
-        let confirmAction = alert["confirm_action"] as? [String: Any]
-
-        guard !title.isEmpty || !body.isEmpty else { return }
+        guard let config = AnalyticsPushAlertParser.parse(alert) else { return }
         guard let presenter = topViewController() else { return }
 
-        let controller = UIAlertController(title: title, message: body, preferredStyle: .alert)
-        controller.addAction(UIAlertAction(title: cancelText, style: .cancel))
-        controller.addAction(
-            UIAlertAction(title: confirmText, style: .default) { _ in
-                guard let confirmAction else { return }
-                let type = confirmAction["type"] as? String ?? ""
-                let value = confirmAction["value"] as? String ?? ""
-                guard !value.isEmpty else { return }
-                if type == "open_url" {
-                    self.openURL(value)
-                } else {
-                    self.openDeepLink(value)
-                }
-            }
+        let controller = UIAlertController(
+            title: config.title,
+            message: config.body,
+            preferredStyle: .alert
         )
+
+        if config.cancel.enabled {
+            controller.addAction(
+                UIAlertAction(title: config.cancel.text, style: .cancel)
+            )
+        }
+
+        if config.confirm.enabled {
+            controller.addAction(
+                UIAlertAction(title: config.confirm.text, style: .default) { _ in
+                    switch config.confirm.action {
+                    case .dismiss:
+                        break
+                    case .deepLink(let link):
+                        self.openDeepLink(link)
+                    case .openURL(let link):
+                        self.openURL(link)
+                    }
+                }
+            )
+        }
+
         presenter.present(controller, animated: true)
     }
 

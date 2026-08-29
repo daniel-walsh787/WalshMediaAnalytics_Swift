@@ -35,4 +35,79 @@ struct AnalyticsPushTests {
         let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]
         #expect(json?["user_id"] == nil)
     }
+
+    @Test func alertParser_bothButtonsEnabled() {
+        let alert: [String: Any] = [
+            "title": "Hello",
+            "body": "World",
+            "cancel": ["enabled": true, "text": "Cancel", "action": "dismiss"],
+            "confirm": [
+                "enabled": true,
+                "text": "OK",
+                "action": ["type": "deep_link", "value": "myapp://home"],
+            ],
+        ]
+        let parsed = AnalyticsPushAlertParser.parse(alert)
+        #expect(parsed?.cancel.enabled == true)
+        #expect(parsed?.confirm.enabled == true)
+        #expect(parsed?.confirm.action == .deepLink("myapp://home"))
+    }
+
+    @Test func alertParser_confirmOnly() {
+        let alert: [String: Any] = [
+            "title": "Update",
+            "body": "Tap to continue",
+            "cancel": ["enabled": false, "text": "Cancel", "action": "dismiss"],
+            "confirm": [
+                "enabled": true,
+                "text": "Continue",
+                "action": ["type": "open_url", "value": "https://example.com"],
+            ],
+        ]
+        let parsed = AnalyticsPushAlertParser.parse(alert)
+        #expect(parsed?.cancel.enabled == false)
+        #expect(parsed?.confirm.enabled == true)
+        #expect(parsed?.confirm.action == .openURL("https://example.com"))
+    }
+
+    @Test func alertParser_cancelOnly() {
+        let alert: [String: Any] = [
+            "title": "Notice",
+            "body": "Please read",
+            "cancel": ["enabled": true, "text": "Got it", "action": "dismiss"],
+            "confirm": [
+                "enabled": false,
+                "text": "OK",
+                "action": ["type": "deep_link", "value": "myapp://x"],
+            ],
+        ]
+        let parsed = AnalyticsPushAlertParser.parse(alert)
+        #expect(parsed?.cancel.enabled == true)
+        #expect(parsed?.confirm.enabled == false)
+    }
+
+    @Test func alertParser_rejectsBothDisabled() {
+        let alert: [String: Any] = [
+            "title": "Hello",
+            "body": "World",
+            "cancel": ["enabled": false, "text": "Cancel", "action": "dismiss"],
+            "confirm": [
+                "enabled": false,
+                "text": "OK",
+                "action": ["type": "deep_link", "value": "myapp://home"],
+            ],
+        ]
+        #expect(AnalyticsPushAlertParser.parse(alert) == nil)
+    }
+
+    @Test func alertParser_rejectsLegacyFlatKeys() {
+        let alert: [String: Any] = [
+            "title": "Hello",
+            "body": "World",
+            "cancel_text": "Cancel",
+            "confirm_text": "OK",
+            "confirm_action": ["type": "deep_link", "value": "myapp://home"],
+        ]
+        #expect(AnalyticsPushAlertParser.parse(alert) == nil)
+    }
 }
