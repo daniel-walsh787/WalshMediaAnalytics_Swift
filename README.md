@@ -131,11 +131,67 @@ Analytics.OTA.flag("flag_key")
 Analytics.OTA.isEnabled("on_off_flag")
 Analytics.OTA.data(for: "path/in/manifest.csv")
 Analytics.OTA.data(for: "logos/QF.png", persist: .purgable)
+Analytics.Push.registerForRemoteNotifications()  // optional — push only
 ```
 
 Prop values are `string` / `int` / `bool` only (`AnalyticsPropValue`). Event names are trimmed and must be 1–128 characters; invalid names are dropped.
 
 HTTP calls use a shared `http_call` event (see [HTTP calls](#http-calls)). Prefer `AnalyticsHTTP.data` / `AnalyticsHTTP.Stopwatch` over hand-rolling prop keys so every app lands in the same dashboard columns.
+
+---
+
+## Push notifications (optional)
+
+Push is **fully optional**. Apps that only use analytics and OTA:
+
+- Do **not** need the Push Notifications capability in Xcode
+- Do **not** call any `Analytics.Push` methods
+
+Opt in only when you send notifications from the WalshMedia Analytics dashboard **Push Notifications** tab.
+
+```swift
+Analytics.start(.fromInfoPlist(userID: { await myAccountId() }))
+
+// Only if this app uses WalshMedia push:
+Analytics.Push.registerForRemoteNotifications()
+```
+
+Enable the **Push Notifications** capability in Xcode only for apps that call `registerForRemoteNotifications()`.
+
+Forward AppDelegate / notification delegate callbacks:
+
+```swift
+func application(_ application: UIApplication,
+                 didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+    Analytics.Push.didRegister(deviceToken: deviceToken)
+}
+
+// UNUserNotificationCenterDelegate
+func userNotificationCenter(_ center: UNUserNotificationCenter,
+                            didReceive response: UNNotificationResponse,
+                            withCompletionHandler completionHandler: @escaping () -> Void) {
+    Analytics.Push.handleNotificationResponse(response)
+    completionHandler()
+}
+
+func userNotificationCenter(_ center: UNUserNotificationCenter,
+                            willPresent notification: UNNotification,
+                            withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+    Analytics.Push.handleRemoteNotification(userInfo: notification.request.content.userInfo)
+    completionHandler([.banner, .sound])
+}
+```
+
+When a notification arrives, the SDK automatically emits `push_received` with `push_id` (matching `wm_push_id` in the APNs payload). The dashboard shows **Apple** status (APNs accept/reject) and **Device** status (receipt via analytics).
+
+Notification actions from the dashboard:
+
+| Action | Behavior |
+|---|---|
+| Deep link | Opens a custom URL when the user taps the notification |
+| Show alert | Presents an in-app alert with configurable confirm/cancel; confirm can deep link or open a URL |
+
+Token registration uses `POST /v1/push/register` with the same HMAC signing as ingest (`{timestamp}.{body}`).
 
 ---
 
