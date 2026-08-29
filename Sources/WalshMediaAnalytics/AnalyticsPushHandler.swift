@@ -18,7 +18,7 @@ final class AnalyticsPushHandler {
             recordPushReceived(pushID)
         }
         if performAction {
-            performAction(from: userInfo)
+            runPayloadAction(from: userInfo)
         }
     }
 
@@ -48,7 +48,7 @@ final class AnalyticsPushHandler {
         Analytics.track("push_received", ["push_id": .int(pushID)])
     }
 
-    private func performAction(from userInfo: [AnyHashable: Any]) {
+    private func runPayloadAction(from userInfo: [AnyHashable: Any]) {
         guard let action = userInfo["wm_action"] as? [String: Any] else { return }
         let type = action["type"] as? String ?? ""
 
