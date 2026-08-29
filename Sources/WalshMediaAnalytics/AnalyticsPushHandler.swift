@@ -1,7 +1,9 @@
 import Foundation
-
 #if canImport(UIKit)
 import UIKit
+#endif
+#if os(macOS)
+import AppKit
 #endif
 
 @MainActor
@@ -65,10 +67,13 @@ final class AnalyticsPushHandler {
         }
     }
 
-    #if canImport(UIKit)
     private func openDeepLink(_ link: String) {
         guard let url = URL(string: link.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
+        #if os(iOS)
         UIApplication.shared.open(url)
+        #elseif os(macOS)
+        NSWorkspace.shared.open(url)
+        #endif
     }
 
     private func openURL(_ link: String) {
@@ -77,6 +82,15 @@ final class AnalyticsPushHandler {
 
     private func presentAlert(_ alert: [String: Any]) {
         guard let config = AnalyticsPushAlertParser.parse(alert) else { return }
+        #if os(iOS)
+        presentUIKitAlert(config)
+        #elseif os(macOS)
+        presentAppKitAlert(config)
+        #endif
+    }
+
+    #if os(iOS)
+    private func presentUIKitAlert(_ config: AnalyticsPushAlertConfig) {
         guard let presenter = topViewController() else { return }
 
         let controller = UIAlertController(
@@ -94,14 +108,7 @@ final class AnalyticsPushHandler {
         if config.confirm.enabled {
             controller.addAction(
                 UIAlertAction(title: config.confirm.text, style: .default) { _ in
-                    switch config.confirm.action {
-                    case .dismiss:
-                        break
-                    case .deepLink(let link):
-                        self.openDeepLink(link)
-                    case .openURL(let link):
-                        self.openURL(link)
-                    }
+                    self.runConfirmAction(config.confirm.action)
                 }
             )
         }
@@ -122,9 +129,34 @@ final class AnalyticsPushHandler {
         }
         return top
     }
-    #else
-    private func openDeepLink(_ link: String) {}
-    private func openURL(_ link: String) {}
-    private func presentAlert(_ alert: [String: Any]) {}
     #endif
+
+    #if os(macOS)
+    private func presentAppKitAlert(_ config: AnalyticsPushAlertConfig) {
+        let sheet = NSAlert()
+        sheet.messageText = config.title
+        sheet.informativeText = config.body
+        // First button is the default (Return). Prefer confirm when it is enabled.
+        if config.confirm.enabled {
+            sheet.addButton(withTitle: config.confirm.text)
+        }
+        if config.cancel.enabled {
+            sheet.addButton(withTitle: config.cancel.text)
+        }
+        let response = sheet.runModal()
+        guard config.confirm.enabled, response == .alertFirstButtonReturn else { return }
+        runConfirmAction(config.confirm.action)
+    }
+    #endif
+
+    private func runConfirmAction(_ action: AnalyticsPushAlertButtonAction) {
+        switch action {
+        case .dismiss:
+            break
+        case .deepLink(let link):
+            openDeepLink(link)
+        case .openURL(let link):
+            openURL(link)
+        }
+    }
 }

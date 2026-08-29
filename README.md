@@ -158,10 +158,15 @@ Analytics.Push.registerForRemoteNotifications()
 
 Enable the **Push Notifications** capability in Xcode only for apps that call `registerForRemoteNotifications()`.
 
-Forward AppDelegate / notification delegate callbacks:
+Forward AppDelegate / notification delegate callbacks (iOS `UIApplicationDelegate` or Mac `NSApplicationDelegate`):
 
 ```swift
 func application(_ application: UIApplication,
+                 didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+    Analytics.Push.didRegister(deviceToken: deviceToken)
+}
+
+func application(_ application: NSApplication,
                  didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
     Analytics.Push.didRegister(deviceToken: deviceToken)
 }

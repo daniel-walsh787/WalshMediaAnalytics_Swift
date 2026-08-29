@@ -1,8 +1,10 @@
 import Foundation
-
+import UserNotifications
 #if canImport(UIKit)
 import UIKit
-import UserNotifications
+#endif
+#if os(macOS)
+import AppKit
 #endif
 
 extension Analytics {
@@ -11,7 +13,6 @@ extension Analytics {
     public enum Push {}
 }
 
-#if canImport(UIKit)
 extension Analytics.Push {
     /// Request notification permission and register with APNs. No-op when analytics is not configured.
     public static func registerForRemoteNotifications() {
@@ -21,7 +22,7 @@ extension Analytics.Push {
             do {
                 let granted = try await center.requestAuthorization(options: [.alert, .sound, .badge])
                 guard granted else { return }
-                UIApplication.shared.registerForRemoteNotifications()
+                Self.registerWithAPNs()
             } catch {
                 print("[WalshMediaAnalytics] push authorization failed: \(error.localizedDescription)")
             }
@@ -40,7 +41,7 @@ extension Analytics.Push {
         print("[WalshMediaAnalytics] APNs registration failed: \(error.localizedDescription)")
     }
 
-    /// Forward from `userNotificationCenter(_:didReceive:withCompletionHandler:)` for background delivery.
+    /// Forward from `userNotificationCenter(_:willPresent:)` / silent delivery.
     public static func handleRemoteNotification(userInfo: [AnyHashable: Any]) {
         Task { @MainActor in
             AnalyticsPushHandler.shared.handleDelivery(userInfo: userInfo, performAction: false)
@@ -54,5 +55,13 @@ extension Analytics.Push {
             AnalyticsPushHandler.shared.handleDelivery(userInfo: userInfo, performAction: true)
         }
     }
+
+    @MainActor
+    private static func registerWithAPNs() {
+        #if os(iOS)
+        UIApplication.shared.registerForRemoteNotifications()
+        #elseif os(macOS)
+        NSApplication.shared.registerForRemoteNotifications()
+        #endif
+    }
 }
-#endif
