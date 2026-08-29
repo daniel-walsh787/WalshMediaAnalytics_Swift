@@ -12,10 +12,20 @@ let package = Package(
         .library(name: "WalshMediaAnalytics", targets: ["WalshMediaAnalytics"]),
     ],
     targets: [
-        .target(name: "WalshMediaAnalytics"),
+        .target(
+            name: "WalshMediaAnalyticsSec",
+            publicHeadersPath: "include",
+            linkerSettings: [
+                .linkedFramework("CoreFoundation"),
+            ]
+        ),
+        .target(
+            name: "WalshMediaAnalytics",
+            dependencies: ["WalshMediaAnalyticsSec"]
+        ),
         .testTarget(
             name: "WalshMediaAnalyticsTests",
-            dependencies: ["WalshMediaAnalytics"]
+            dependencies: ["WalshMediaAnalytics", "WalshMediaAnalyticsSec"]
         ),
     ]
 )

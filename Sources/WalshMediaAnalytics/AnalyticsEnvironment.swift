@@ -1,6 +1,6 @@
 import Foundation
 import StoreKit
-import Security
+import WalshMediaAnalyticsSec
 import os
 
 /// Resolves ingest `env` (`dev` | `testflight` | `prod`) the same way AirBook
@@ -138,11 +138,8 @@ public enum AnalyticsEnvironment {
     }
 
     static func hasBetaReportsActiveEntitlement() -> Bool {
-        guard let task = SecTaskCreateFromSelf(nil) else { return false }
-        var error: Unmanaged<CFError>?
-        let value = SecTaskCopyValueForEntitlement(task, "beta-reports-active" as CFString, &error)
-        error?.release()
-        return hasTestFlightEntitlementValue(value)
+        guard let path = Bundle.main.executableURL?.path else { return false }
+        return path.withCString { WalshMediaExecutableHasBetaReportsActive($0) }
     }
 
     private static func isTestFlightProvision(_ bundle: Bundle) -> Bool {

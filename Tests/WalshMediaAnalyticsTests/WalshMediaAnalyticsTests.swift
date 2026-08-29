@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import WalshMediaAnalyticsSec
 @testable import WalshMediaAnalytics
 
 struct WalshMediaAnalyticsTests {
@@ -51,6 +52,26 @@ struct WalshMediaAnalyticsTests {
         #expect(AnalyticsEnvironment.hasTestFlightEntitlementValue(NSNumber(value: true)))
         #expect(!AnalyticsEnvironment.hasTestFlightEntitlementValue(false))
         #expect(!AnalyticsEnvironment.hasTestFlightEntitlementValue(nil))
+
+        let xml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>beta-reports-active</key>
+            <true/>
+        </dict>
+        </plist>
+        """
+        let xmlBytes = Array(xml.utf8)
+        #expect(xmlBytes.withUnsafeBytes { raw in
+            WalshMediaEntitlementsDataHasBetaReportsActive(raw.baseAddress, xmlBytes.count)
+        })
+        let absent = Array("<dict><key>get-task-allow</key><true/></dict>".utf8)
+        #expect(!absent.withUnsafeBytes { raw in
+            WalshMediaEntitlementsDataHasBetaReportsActive(raw.baseAddress, absent.count)
+        })
+        _ = AnalyticsEnvironment.hasBetaReportsActiveEntitlement()
     }
 
     @Test func ingestCodec_signsTimestampDotBody() throws {

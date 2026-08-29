@@ -426,7 +426,7 @@ The package detects this itself (`AnalyticsEnvironment.current()`). Host apps sh
 | 1 | `DISTRIBUTION_CHANNEL=direct` (Sparkle / notarized Mac) | `prod` |
 | 2 | Plist `ANALYTICS_ENV` or `AIRBOOK_SIGN_IN_TIER` (`dev` / `development` / `testflight` / `prod` / `production`) | that value |
 | 3 | `#if DEBUG` | `dev` |
-| 4 | Code-signature entitlement `beta-reports-active` (survives Apple re-signing; `embedded.mobileprovision` is stripped from TestFlight) | `testflight` |
+| 4 | Signed `beta-reports-active` entitlement in the Mach-O code signature (Apple strips `embedded.mobileprovision` from TestFlight; `SecTask` is not in the iOS SDK) | `testflight` |
 | 4 | Embedded profile contains `beta-reports-active` (`embedded.mobileprovision` or `embedded.provisionprofile`) | `testflight` |
 | 4 | App Store receipt file is named `sandboxReceipt` (or that file exists next to `receipt`) | `testflight` |
 | 4 | `AppTransaction.environment` is `.sandbox` or `.xcode` (local read first; `refresh()` only if needed, so offline still works) | `testflight` |
