@@ -44,8 +44,13 @@ struct WalshMediaAnalyticsTests {
         #expect(AnalyticsEnvironment.hasSandboxReceipt(url: URL(fileURLWithPath: "/foo/sandboxReceipt")))
         #expect(!AnalyticsEnvironment.hasSandboxReceipt(url: URL(fileURLWithPath: "/foo/receipt")))
         #expect(!AnalyticsEnvironment.hasSandboxReceipt(url: nil))
+        #expect(AnalyticsEnvironment.hasSandboxReceiptFile(appStoreReceiptURL: URL(fileURLWithPath: "/foo/sandboxReceipt")))
         #expect(AnalyticsEnvironment.hasTestFlightProvision("<key>beta-reports-active</key><true/>"))
         #expect(!AnalyticsEnvironment.hasTestFlightProvision("<key>get-task-allow</key><true/>"))
+        #expect(AnalyticsEnvironment.hasTestFlightEntitlementValue(true))
+        #expect(AnalyticsEnvironment.hasTestFlightEntitlementValue(NSNumber(value: true)))
+        #expect(!AnalyticsEnvironment.hasTestFlightEntitlementValue(false))
+        #expect(!AnalyticsEnvironment.hasTestFlightEntitlementValue(nil))
     }
 
     @Test func ingestCodec_signsTimestampDotBody() throws {

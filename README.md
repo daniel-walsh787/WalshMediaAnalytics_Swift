@@ -419,18 +419,19 @@ Do not call these from iOS, Mac, or web clients.
 
 Ingest `env` is one of `dev`, `testflight`, or `prod`. It is **not** a privacy identifier — it only buckets events so TestFlight noise does not land in production dashboards.
 
-The package detects this itself (`AnalyticsEnvironment.current()`). Host apps should **not** hard-code `"prod"`. A single StoreKit flag is how TestFlight used to look like production (and the reverse). Detection ORs several signals and treats **any** sandbox hit as TestFlight, then caches the result for the process.
+The package detects this itself (`AnalyticsEnvironment.current()`). Host apps should **not** hard-code `"prod"`. StoreKit sandbox is only a *positive* TestFlight signal — a production `AppTransaction` does **not** mean this binary is App Store. TestFlight testers who originally installed from the App Store often have production App Transactions and production subscription entitlements. Detection ORs several signals and treats **any** TestFlight hit as TestFlight, then caches the result for the process.
 
 | Order | Check | Result |
 |---|---|---|
 | 1 | `DISTRIBUTION_CHANNEL=direct` (Sparkle / notarized Mac) | `prod` |
 | 2 | Plist `ANALYTICS_ENV` or `AIRBOOK_SIGN_IN_TIER` (`dev` / `development` / `testflight` / `prod` / `production`) | that value |
 | 3 | `#if DEBUG` | `dev` |
+| 4 | Code-signature entitlement `beta-reports-active` (survives Apple re-signing; `embedded.mobileprovision` is stripped from TestFlight) | `testflight` |
 | 4 | Embedded profile contains `beta-reports-active` (`embedded.mobileprovision` or `embedded.provisionprofile`) | `testflight` |
-| 4 | App Store receipt file is named `sandboxReceipt` | `testflight` |
+| 4 | App Store receipt file is named `sandboxReceipt` (or that file exists next to `receipt`) | `testflight` |
 | 4 | `AppTransaction.environment` is `.sandbox` or `.xcode` (local read first; `refresh()` only if needed, so offline still works) | `testflight` |
 | 4 | Any verified StoreKit `Transaction.currentEntitlements` is sandbox / Xcode | `testflight` |
-| 5 | Otherwise | `prod` |
+| 5 | Otherwise | `prod` (not cached if StoreKit did not return an environment, so the next flush can retry) |
 
 Mac App Store is `platform: macos` + `env: prod`. Leave the override empty unless you are debugging:
 

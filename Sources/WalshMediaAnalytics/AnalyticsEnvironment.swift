@@ -1,20 +1,23 @@
 import Foundation
 import StoreKit
+import Security
 import os
 
 /// Resolves ingest `env` (`dev` | `testflight` | `prod`) the same way AirBook
-/// distinguishes TestFlight from App Store — several signals, any sandbox hit wins.
+/// distinguishes TestFlight from App Store — several signals, any TestFlight hit wins.
 public enum AnalyticsEnvironment {
     private static let cache = OSAllocatedUnfairLock<String?>(initialState: nil)
 
-    /// Cached after the first resolve so flushes do not re-hit StoreKit.
+    /// Cached after the first *conclusive* resolve so flushes do not re-hit StoreKit.
     public static func current(bundle: Bundle = .main) async -> String {
         if let cached = cache.withLock({ $0 }) {
             return cached
         }
-        let resolved = await resolve(bundle: bundle)
-        cache.withLock { cache in
-            if cache == nil { cache = resolved }
+        let (resolved, conclusive) = await resolve(bundle: bundle)
+        if conclusive {
+            cache.withLock { cache in
+                if cache == nil { cache = resolved }
+            }
         }
         return cache.withLock({ $0 }) ?? resolved
     }
@@ -46,45 +49,84 @@ public enum AnalyticsEnvironment {
         return ingestValue(fromSignInTier: trimmed)
     }
 
+    /// True when this binary is a TestFlight (or TestFlight-equivalent) distribution.
+    /// Does not use StoreKit — an App Store subscriber on TestFlight still returns true.
+    public static func isTestFlightDistribution(bundle: Bundle = .main) -> Bool {
+        hasBetaReportsActiveEntitlement()
+            || isTestFlightProvision(bundle)
+            || hasSandboxReceiptFile(appStoreReceiptURL: bundle.appStoreReceiptURL)
+    }
+
     static func hasSandboxReceipt(url: URL?) -> Bool {
         url?.lastPathComponent == "sandboxReceipt"
+    }
+
+    static func hasSandboxReceiptFile(appStoreReceiptURL: URL?) -> Bool {
+        if hasSandboxReceipt(url: appStoreReceiptURL) { return true }
+        guard let url = appStoreReceiptURL else { return false }
+        let sandbox = url.deletingLastPathComponent().appendingPathComponent("sandboxReceipt")
+        return FileManager.default.fileExists(atPath: sandbox.path)
     }
 
     static func hasTestFlightProvision(_ provision: String) -> Bool {
         provision.contains("<key>beta-reports-active</key>")
     }
 
-    private static func resolve(bundle: Bundle) async -> String {
+    static func hasTestFlightEntitlementValue(_ value: Any?) -> Bool {
+        if let flag = value as? Bool { return flag }
+        if let number = value as? NSNumber { return number.boolValue }
+        return false
+    }
+
+    private static func resolve(bundle: Bundle) async -> (String, conclusive: Bool) {
         if isDirectDistribution(bundle) {
             print("[WalshMediaAnalytics] env=prod (DISTRIBUTION_CHANNEL=direct)")
-            return "prod"
+            return ("prod", true)
         }
 
         if let forced = override(fromPlistValue: bundle.object(forInfoDictionaryKey: "ANALYTICS_ENV") as? String)
             ?? override(fromPlistValue: bundle.object(forInfoDictionaryKey: "AIRBOOK_SIGN_IN_TIER") as? String)
         {
             print("[WalshMediaAnalytics] env=\(forced) (plist override)")
-            return forced
+            return (forced, true)
         }
 
         #if DEBUG
         print("[WalshMediaAnalytics] env=dev (#if DEBUG)")
-        return "dev"
+        return ("dev", true)
         #else
+        let betaEntitlement = hasBetaReportsActiveEntitlement()
         let embeddedBeta = isTestFlightProvision(bundle)
-        let receiptSandbox = hasSandboxReceipt(url: bundle.appStoreReceiptURL)
+        let receiptSandbox = hasSandboxReceiptFile(appStoreReceiptURL: bundle.appStoreReceiptURL)
+        let binaryTestFlight = betaEntitlement || embeddedBeta || receiptSandbox
+        if binaryTestFlight {
+            print(
+                "[WalshMediaAnalytics] env=testflight " +
+                    "betaEntitlement=\(betaEntitlement) embeddedBeta=\(embeddedBeta) " +
+                    "receiptSandbox=\(receiptSandbox)"
+            )
+            return ("testflight", true)
+        }
+
         let appTransactionEnv = await readAppTransactionEnvironment()
         let entitlementSandbox = await anyEntitlementUsesSandbox()
         let appTransactionSandbox = appTransactionEnv == .sandbox || appTransactionEnv == .xcode
-        let isTestFlight = embeddedBeta || receiptSandbox || appTransactionSandbox || entitlementSandbox
+        let isTestFlight = appTransactionSandbox || entitlementSandbox
 
         print(
             "[WalshMediaAnalytics] env detection " +
-                "embeddedBeta=\(embeddedBeta) receiptSandbox=\(receiptSandbox) " +
+                "betaEntitlement=\(betaEntitlement) embeddedBeta=\(embeddedBeta) " +
+                "receiptSandbox=\(receiptSandbox) " +
                 "appTransaction=\(appTransactionEnv.map { String(describing: $0) } ?? "nil") " +
                 "entitlementSandbox=\(entitlementSandbox) → \(isTestFlight ? "testflight" : "prod")"
         )
-        return isTestFlight ? "testflight" : "prod"
+
+        if isTestFlight {
+            return ("testflight", true)
+        }
+        // StoreKit failure is not proof of App Store — retry next flush instead of pinning prod.
+        let conclusive = appTransactionEnv != nil
+        return ("prod", conclusive)
         #endif
     }
 
@@ -95,13 +137,28 @@ public enum AnalyticsEnvironment {
         return raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "direct"
     }
 
+    static func hasBetaReportsActiveEntitlement() -> Bool {
+        guard let task = SecTaskCreateFromSelf(nil) else { return false }
+        var error: Unmanaged<CFError>?
+        let value = SecTaskCopyValueForEntitlement(task, "beta-reports-active" as CFString, &error)
+        error?.release()
+        return hasTestFlightEntitlementValue(value)
+    }
+
     private static func isTestFlightProvision(_ bundle: Bundle) -> Bool {
-        let urls = [
-            bundle.url(forResource: "embedded", withExtension: "mobileprovision"),
-            bundle.url(forResource: "embedded", withExtension: "provisionprofile"),
+        var urls: [URL] = [
+            bundle.bundleURL.appendingPathComponent("embedded.mobileprovision"),
+            bundle.bundleURL.appendingPathComponent("embedded.provisionprofile"),
+            bundle.bundleURL.appendingPathComponent("Contents/embedded.provisionprofile"),
         ]
+        if let url = bundle.url(forResource: "embedded", withExtension: "mobileprovision") {
+            urls.append(url)
+        }
+        if let url = bundle.url(forResource: "embedded", withExtension: "provisionprofile") {
+            urls.append(url)
+        }
         for url in urls {
-            guard let url, let data = try? Data(contentsOf: url),
+            guard let data = try? Data(contentsOf: url),
                   let provision = String(data: data, encoding: .isoLatin1) else {
                 continue
             }
