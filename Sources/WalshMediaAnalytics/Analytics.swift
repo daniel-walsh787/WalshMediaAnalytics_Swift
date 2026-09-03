@@ -50,6 +50,7 @@ enum AnalyticsRuntime {
 public enum Analytics {
     public static func start(_ configuration: AnalyticsConfiguration) {
         AnalyticsRuntime.setConfiguration(configuration)
+        AnalyticsSession.beginIfNeeded()
         AnalyticsOTAMemory.preload(appId: configuration.appId)
         Task {
             let env = await configuration.environment()

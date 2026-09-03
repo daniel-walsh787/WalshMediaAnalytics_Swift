@@ -41,6 +41,17 @@ Call `Analytics.flushNow()` when the scene backgrounds so the last batch leaves 
 
 Keep a thin per-app `AnalyticsService` (or similar) for named helpers — `flight_logged`, `purchase`, etc. The package should stay generic.
 
+`Analytics.start` creates a process `session_id` and captures device/OS info. Every subsequent `track` (including `app_crash` / `app_hang` / `http_call`) gets these props automatically. Caller keys with the same name win.
+
+| Prop | Meaning |
+|---|---|
+| `session_id` | UUID for this process launch. Same value on every event until the app is killed. |
+| `device_model` | Hardware identifier (`iPad15,3`, `Mac15,7`, simulator model) |
+| `device` | Marketing name when known (`iPad Air 11-inch (M3)`), otherwise `device_model` |
+| `os_name` | `iOS` / `iPadOS` / `macOS` |
+| `os_version` | `26.6` |
+| `device_label` | `device` + OS name + version, e.g. `iPad Air 11-inch (M3) iPadOS 26.6` |
+
 ---
 
 ## 2. Required config
@@ -304,8 +315,8 @@ Suggested shared names:
 | `purchase` | Successful IAP | `product` |
 | `error` | Handled failure you care about | `code`, `area` (no message dumps with PII) |
 | `http_call` | An outbound HTTP (or HTTP-like) request finished | `endpoint`, `http_status`, `duration_ms`, `timed_out`, `app_result` |
-| `app_crash` | MetricKit crash (automatic) | `exception_type`, `exception_code`, `signal`, `reason`, `version`, `stack` |
-| `app_hang` | MetricKit hang (automatic) | `hang_ms`, `version`, `stack` |
+| `app_crash` | MetricKit crash (automatic) | `exception_type`, `exception_code`, `exception_name`, `signal`, `signal_name`, `reason`, `exception_message`, `version`, `build`, `stack`, `stack_app`, `binary_uuid`, `stack_truncated` |
+| `app_hang` | MetricKit hang (automatic) | `hang_ms`, `version`, `build`, `stack`, `stack_app`, `binary_uuid`, `stack_truncated` |
 
 Product-specific names are fine (`flight_logged`, `backup_created`). Keep them stable — the dashboard groups by exact string.
 
@@ -393,7 +404,7 @@ The Worker also rate-limits **10 requests / minute / IP**. Office NAT shares an 
 
 **Install id:** Keychain UUID per install (not IDFV-as-PII, not Apple ID). Fallback UserDefaults, then migrate into Keychain.
 
-**Crashes:** MetricKit diagnostics arrive on a **later launch**. Stacks are unsybolicated (`AirBook+0x1a2b`). Jetsam / some watchdog kills may not appear. This is not Crashlytics.
+**Crashes:** MetricKit diagnostics arrive on a **later launch**. `stack` is unsybolicated (`AirBook+0x1a2b`). `stack_app` is app-binary frames with `binaryUUID` (`AirBook+0x9e6cc8@UUID`) so a matching dSYM can be used with `atos`. `binary_uuid` is the app frame UUID. Jetsam / some watchdog kills may not appear. This is not Crashlytics.
 
 **Limits (Worker):** body ≤ 256 KB; ≤ 100 events; each `props` JSON ≤ 8192 bytes; `device_id` / event `id` / `name` 1–128 chars.
 
@@ -461,13 +472,23 @@ Each flush is one JSON batch:
 
 | Field | What it is | What it is not |
 |---|---|---|
-| `platform` | `ios` or `macos` | Device model / OS version |
+| `platform` | `ios` or `macos` | A user identifier |
 | `env` | `dev` / `testflight` / `prod` | A user identifier |
 | `device_id` | Random UUID generated on first launch, stored in the Keychain (UserDefaults fallback). Stable **per install**, namespaced by `appId` | IDFV, IDFA, Apple ID, email, or name. Reinstall (or a new `appId`) creates a new id |
 | `events[].id` | Random UUID so retries are deduplicated | A user identifier |
 | `events[].name` | Event name you passed to `track` (or `app_crash` / `app_hang`) | — |
 | `events[].ts` | Unix time in seconds | — |
-| `events[].props` | Optional string / int / bool map you passed | Omitted when empty |
+| `events[].props` | Optional string / int / bool map you passed, plus automatic `session_id` / device / OS fields | Omitted when empty |
+
+Automatic event props (set on `Analytics.start`, merged into every event; caller keys win):
+
+| Prop | What it is |
+|---|---|
+| `session_id` | Random UUID for this process. Not stable across launches |
+| `device_model` | Hardware identifier (`iPad15,3`) |
+| `device` | Marketing name when known |
+| `os_name` / `os_version` | e.g. `iPadOS` / `26.6` |
+| `device_label` | Combined display string |
 
 Headers: `X-App-Id` (product slug), `X-Timestamp` (Unix seconds for the signed payload), and `X-Signature` (HMAC of `{timestamp}.{body}` — not a user secret).
 
@@ -492,10 +513,10 @@ Anything you put in `track(_:_:)` names and props is stored as analytics. The pa
 
 With `reportsCrashes` (default **on**), MetricKit may later send:
 
-- `app_crash` — exception type/code, signal, truncated termination reason, app version, truncated unsybolicated stack (`Binary+0xoffset`)
-- `app_hang` — hang duration, version, same style of stack
+- `app_crash` — Mach exception type/code/name, signal name, termination reason and (iOS 17+) Objective-C/Swift exception message, marketing version + build, unsybolicated `stack`, app-only `stack_app` with binary UUID
+- `app_hang` — hang duration, version, build, same style of stack
 
-Stacks are not symbolicated and are truncated (~1.5 KB). Termination reasons can occasionally include path-like strings; they are still truncated. Turn this off with `reportsCrashes: false` if a given app should not collect crash diagnostics.
+`stack` is truncated on a frame boundary (~4 KB / 48 frames). `stack_truncated` is set when frames or bytes were dropped. Turn this off with `reportsCrashes: false` if a given app should not collect crash diagnostics.
 
 ### Suggested privacy-policy wording (adapt as needed)
 

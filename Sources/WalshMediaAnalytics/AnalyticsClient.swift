@@ -66,7 +66,7 @@ final class AnalyticsClient {
             id: UUID().uuidString,
             name: trimmed,
             ts: Int(Date().timeIntervalSince1970),
-            props: props
+            props: AnalyticsSession.enrich(props)
         )
         pending.append(event)
         persistBuffer()

@@ -22,6 +22,7 @@ final class AnalyticsMetricKitSubscriber: NSObject, MXMetricManagerSubscriber {
     }
 
     private static func mappedEvents(from payload: MXDiagnosticPayload) -> [AnalyticsCrashMapper.MappedEvent] {
+        let appBinaryName = AnalyticsDeviceInfo.appBinaryName()
         var events: [AnalyticsCrashMapper.MappedEvent] = []
         for crash in payload.crashDiagnostics ?? [] {
             events.append(
@@ -30,8 +31,11 @@ final class AnalyticsMetricKitSubscriber: NSObject, MXMetricManagerSubscriber {
                     exceptionCode: crash.exceptionCode?.intValue,
                     signal: crash.signal?.intValue,
                     reason: crash.terminationReason,
+                    exceptionMessage: crash.exceptionReason?.composedMessage,
                     version: crash.applicationVersion,
-                    callStackJSON: crash.callStackTree.jsonRepresentation()
+                    build: crash.metaData.applicationBuildVersion,
+                    callStackJSON: crash.callStackTree.jsonRepresentation(),
+                    appBinaryName: appBinaryName
                 )
             )
         }
@@ -40,7 +44,9 @@ final class AnalyticsMetricKitSubscriber: NSObject, MXMetricManagerSubscriber {
                 AnalyticsCrashMapper.hang(
                     hangMilliseconds: hangMilliseconds(hang.hangDuration),
                     version: hang.applicationVersion,
-                    callStackJSON: hang.callStackTree.jsonRepresentation()
+                    build: hang.metaData.applicationBuildVersion,
+                    callStackJSON: hang.callStackTree.jsonRepresentation(),
+                    appBinaryName: appBinaryName
                 )
             )
         }

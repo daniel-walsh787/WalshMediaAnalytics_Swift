@@ -133,7 +133,9 @@ struct WalshMediaAnalyticsTests {
         let crash = AnalyticsCrashMapper.crash(exceptionType: 1, signal: 11, version: "1.2.3")
         #expect(crash.name == "app_crash")
         #expect(crash.props["exception_type"] == .int(1))
+        #expect(crash.props["exception_name"] == .string("EXC_BAD_ACCESS"))
         #expect(crash.props["signal"] == .int(11))
+        #expect(crash.props["signal_name"] == .string("SIGSEGV"))
         #expect(crash.props["version"] == .string("1.2.3"))
         #expect(crash.props["hang_ms"] == nil)
 
@@ -143,17 +145,32 @@ struct WalshMediaAnalyticsTests {
         #expect(hang.props["exception_type"] == nil)
     }
 
+    @Test func crashMapper_usesExceptionMessageWhenReasonMissing() {
+        let crash = AnalyticsCrashMapper.crash(
+            exceptionType: 6,
+            signal: 5,
+            exceptionMessage: "Fatal error: Unexpectedly found nil",
+            version: "1.6.4",
+            build: "88"
+        )
+        #expect(crash.props["exception_name"] == .string("EXC_BREAKPOINT"))
+        #expect(crash.props["signal_name"] == .string("SIGTRAP"))
+        #expect(crash.props["reason"] == .string("Fatal error: Unexpectedly found nil"))
+        #expect(crash.props["exception_message"] == .string("Fatal error: Unexpectedly found nil"))
+        #expect(crash.props["build"] == .string("88"))
+    }
+
     @Test func crashMapper_truncatesReasonAndStack() throws {
         let reason = String(repeating: "x", count: AnalyticsCrashMapper.maxReasonLength + 40)
         let crash = AnalyticsCrashMapper.crash(reason: reason)
         #expect(crash.props["reason"] == .string(String(repeating: "x", count: AnalyticsCrashMapper.maxReasonLength)))
 
-        let longName = String(repeating: "A", count: 200)
+        let longName = String(repeating: "A", count: 80)
         var current: [String: Any] = [
             "binaryName": longName,
             "offsetIntoBinaryTextSegment": 1
         ]
-        for index in 0..<20 {
+        for index in 0..<80 {
             current = [
                 "binaryName": longName,
                 "offsetIntoBinaryTextSegment": index,
@@ -170,7 +187,9 @@ struct WalshMediaAnalyticsTests {
             Issue.record("expected stack string")
             return
         }
-        #expect(stack.count == AnalyticsCrashMapper.maxStackLength)
+        #expect(stack.count <= AnalyticsCrashMapper.maxStackLength)
+        #expect(stacked.props["stack_truncated"] == .bool(true))
+        #expect(!stack.hasSuffix(";"))
     }
 
     @Test func crashMapper_flattensAttributedThreadStack() throws {
@@ -195,7 +214,8 @@ struct WalshMediaAnalyticsTests {
                                     "subFrames": [
                                         [
                                             "binaryName": "AirBook",
-                                            "offsetIntoBinaryTextSegment": 6699
+                                            "offsetIntoBinaryTextSegment": 6699,
+                                            "binaryUUID": "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"
                                         ]
                                     ]
                                 ]
@@ -208,6 +228,37 @@ struct WalshMediaAnalyticsTests {
         let stack = try #require(AnalyticsCrashMapper.flattenStack(json))
         #expect(stack == "AirBook+0x1a2b; libswiftCore+0xfff; libsystem_kernel+0x10")
         #expect(!stack.contains("Other+"))
+
+        let crash = AnalyticsCrashMapper.crash(callStackJSON: json, appBinaryName: "AirBook")
+        #expect(crash.props["stack"] == .string("AirBook+0x1a2b; libswiftCore+0xfff; libsystem_kernel+0x10"))
+        #expect(crash.props["stack_app"] == .string("AirBook+0x1a2b@AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"))
+        #expect(crash.props["binary_uuid"] == .string("AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"))
+        #expect(crash.props["stack_truncated"] == .bool(false))
+    }
+
+    @Test func analyticsSession_enrichesWithoutOverwritingCallerKeys() {
+        AnalyticsSession.resetForTests()
+        let enriched = AnalyticsSession.enrich([
+            "screen": "home",
+            "device_model": "caller-wins",
+        ])
+        #expect(enriched["screen"] == .string("home"))
+        #expect(enriched["device_model"] == .string("caller-wins"))
+        guard case .string(let sessionID) = enriched["session_id"] else {
+            Issue.record("expected session_id")
+            return
+        }
+        #expect(!sessionID.isEmpty)
+        #expect(enriched["os_version"] != nil)
+        #expect(enriched["device_label"] != nil)
+        let again = AnalyticsSession.enrich([:])
+        #expect(again["session_id"] == .string(sessionID))
+    }
+
+    @Test func analyticsDeviceNames_mapsKnownIdentifiers() {
+        #expect(AnalyticsDeviceNames.marketingName(for: "iPad15,3") == "iPad Air 11-inch (M3)")
+        #expect(AnalyticsDeviceNames.marketingName(for: "iPhone17,1") == "iPhone 16 Pro")
+        #expect(AnalyticsDeviceNames.marketingName(for: "unknown-device") == nil)
     }
 
     @Test func httpCall_omitsDurationWhenTimedOut() {
