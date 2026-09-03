@@ -143,11 +143,45 @@ Analytics.OTA.isEnabled("on_off_flag")
 Analytics.OTA.data(for: "path/in/manifest.csv")
 Analytics.OTA.data(for: "logos/QF.png", persist: .purgable)
 Analytics.Push.registerForRemoteNotifications()  // optional — push only
+Analytics.FeatureRequests.submit(FeatureRequestDraft(title: "…", body: "…"))
+Analytics.FeatureRequests.list(sort: .stars)
+Analytics.FeatureRequests.star(id:)
+Analytics.FeatureRequests.unstar(id:)
 ```
 
 Prop values are `string` / `int` / `bool` only (`AnalyticsPropValue`). Event names are trimmed and must be 1–128 characters; invalid names are dropped.
 
 HTTP calls use a shared `http_call` event (see [HTTP calls](#http-calls)). Prefer `AnalyticsHTTP.data` / `AnalyticsHTTP.Stopwatch` over hand-rolling prop keys so every app lands in the same dashboard columns.
+
+---
+
+## Feature Requests (optional)
+
+API + models only — apps build their own UI. Uses the same HMAC secret and `baseURL` as ingest / OTA / push. Empty `ANALYTICS_HMAC_SECRET` throws `notConfigured`.
+
+```swift
+Analytics.start(.fromInfoPlist(userID: { await myAccountId() }))
+
+let created = try await Analytics.FeatureRequests.submit(
+    FeatureRequestDraft(title: "Dark mode", body: "System-wide dark theme.")
+)
+// created.status == .pending until moderated in the portal
+
+let ranked = try await Analytics.FeatureRequests.list(sort: .stars)
+// or: .recent, .status — optional statusOrder: [.comingSoon, .inProgress, .voting, …]
+
+try await Analytics.FeatureRequests.star(id: ranked[0].id)
+try await Analytics.FeatureRequests.unstar(id: ranked[0].id)
+```
+
+| Method | Path | Notes |
+|---|---|---|
+| `POST` | `/v1/feature-requests` | Body: `title`, `body`, `device_id`, `env`, optional `user_id`. Signed like ingest/push (`{timestamp}.{body}`). |
+| `GET` | `/v1/feature-requests` | Query: `sort`, optional `status_order`, `device_id`, optional `user_id` (for `viewer_starred`). Signed with empty body + `X-Timestamp`. |
+| `POST` | `/v1/feature-requests/{id}/star` | Body: `device_id`, optional `user_id`. |
+| `DELETE` | `/v1/feature-requests/{id}/star` | Same voter body; unmetered. |
+
+Statuses (API strings): `pending`, `voting`, `backlog`, `in_progress`, `coming_soon`, `complete`, `rejected`. Client list returns published rows only (not `pending` / soft-deleted). Models: `FeatureRequest`, `FeatureRequestDraft`, `FeatureRequestStatus`, `FeatureRequestSort`; errors via `AnalyticsFeatureRequestsError` (`unauthorized`, `quotaExceeded`, …).
 
 ---
 
