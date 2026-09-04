@@ -271,6 +271,9 @@ if Analytics.OTA.isEnabled("airline_logos") {
     // on in Debug / TestFlight, off in App Store — no per-env checks in the app
 }
 
+// Per-environment typed value: `{ "dev": 1500, "testflight": 1500, "prod": 800 }`
+let splashMs = Analytics.OTA.forEnvironment("SplashScreenMinTimeMs")?.intValue ?? 0
+
 // Not an on/off flag — use generic access:
 let theme = Analytics.OTA.flag("theme")?.stringValue ?? "system"
 let themeAlt = Analytics.OTA.string("theme") ?? "system"
@@ -297,12 +300,13 @@ On a new manifest (not 304), paths that disappeared are pruned from both Applica
 
 Last-known flags persist in UserDefaults. Call `Analytics.OTA.flag` / `isEnabled` any time after `start` — they use the cache immediately, even before `sync()` finishes.
 
-**Feature flags.** Dashboard values are JSON. Use two accessors:
+**Feature flags.** Dashboard values are JSON. Use these accessors:
 
 | Method | Use when |
 |---|---|
 | `Analytics.OTA.flag("key")` | Any flag: string, number, object, array. Returns `AnalyticsOTAValue?`. Typed helpers: `string`, `int`, `bool`, `double`, `json`. |
 | `Analytics.OTA.isEnabled("key")` | The flag is an on/off switch (you know the schema). |
+| `Analytics.OTA.forEnvironment("key")` | The flag is a per-channel object (any value type per channel). |
 
 `isEnabled` understands:
 
@@ -311,6 +315,17 @@ Last-known flags persist in UserDefaults. Call `Analytics.OTA.flag` / `isEnabled
 
 ```json
 { "dev": true, "testflight": "yes", "prod": "off" }
+```
+
+`forEnvironment` expects the same three keys, but values may be any JSON type:
+
+```json
+{ "dev": 1500, "testflight": 1500, "prod": 800 }
+```
+
+```swift
+let splashMs = Analytics.OTA.forEnvironment("SplashScreenMinTimeMs")?.intValue ?? 0
+let theme = Analytics.OTA.forEnvironment("theme")?.stringValue ?? "system"
 ```
 
 The channel object is evaluated with the same `dev` / `testflight` / `prod` detector as ingest. You do not branch on environment in the app. A theme string like `"dark"` is **not** on/off — use `flag("theme")` / `string("theme")`. `{ "enabled": "yes", "variant": "b" }` still reads the `enabled` key from `isEnabled`.

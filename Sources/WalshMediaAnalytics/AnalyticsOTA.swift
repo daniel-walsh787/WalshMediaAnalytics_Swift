@@ -73,14 +73,22 @@ public enum AnalyticsOTAValue: Sendable, Equatable {
     /// Exact per-channel payload `{ "dev": …, "testflight": …, "prod": … }` whose values
     /// are on/off tokens. Returns `nil` when the object has any other shape.
     public var environmentToggles: [String: Bool]? {
-        guard case .object(let object) = self else { return nil }
-        guard Set(object.keys) == Self.environmentFlagKeys else { return nil }
+        guard let values = environmentValues else { return nil }
         var map: [String: Bool] = [:]
         for key in Self.environmentFlagKeys {
-            guard let enabled = object[key]?.onOffValue else { return nil }
+            guard let enabled = values[key]?.onOffValue else { return nil }
             map[key] = enabled
         }
         return map
+    }
+
+    /// Exact per-channel payload `{ "dev": …, "testflight": …, "prod": … }` with any
+    /// JSON value type per channel (int, string, bool, object, …). Returns `nil` when
+    /// the object is missing keys, has extra keys, or is not an object.
+    public var environmentValues: [String: AnalyticsOTAValue]? {
+        guard case .object(let object) = self else { return nil }
+        guard Set(object.keys) == Self.environmentFlagKeys else { return nil }
+        return object
     }
 
     static let environmentFlagKeys: Set<String> = ["dev", "testflight", "prod"]
@@ -121,7 +129,7 @@ public struct AnalyticsOTAFlags: Sendable, Equatable {
 
     /// On/off flags only. Accepts a single token (`true` / `enabled` / `yes` / `on`
     /// and the false counterparts) or exactly `{ "dev": …, "testflight": …, "prod": … }`.
-    /// Other JSON (themes, limits, payloads) should use `flag(_:)`.
+    /// Other JSON (themes, limits, payloads) should use `flag(_:)` or `forEnvironment(_:)`.
     public func isEnabled(_ key: String, default fallback: Bool = false, environment: String? = nil) -> Bool {
         guard let value = values[key] else { return fallback }
         if let map = value.environmentToggles {
@@ -129,6 +137,20 @@ public struct AnalyticsOTAFlags: Sendable, Equatable {
             return map[env] ?? fallback
         }
         return value.isEnabled ?? fallback
+    }
+
+    /// Per-environment flag value for the current (or explicit) channel.
+    ///
+    /// Expects exactly:
+    /// ```json
+    /// { "dev": …, "testflight": …, "prod": … }
+    /// ```
+    /// with any JSON type per channel. Returns `nil` when the key is missing, the
+    /// payload is not that shape, or the channel cannot be resolved yet.
+    public func forEnvironment(_ key: String, environment: String? = nil) -> AnalyticsOTAValue? {
+        guard let value = values[key], let map = value.environmentValues else { return nil }
+        guard let env = resolvedEnvironment(environment) else { return nil }
+        return map[env]
     }
 
     private func resolvedEnvironment(_ explicit: String?) -> String? {
@@ -340,6 +362,12 @@ extension Analytics {
         /// Raw value for any flag. Use this for strings, numbers, and objects that are
         /// not on/off switches.
         public static func flag(_ key: String) -> AnalyticsOTAValue? { flags.flag(key) }
+
+        /// Value for the current ingest channel when the flag is
+        /// `{ "dev": …, "testflight": …, "prod": … }` (any JSON type per channel).
+        public static func forEnvironment(_ key: String) -> AnalyticsOTAValue? {
+            flags.forEnvironment(key)
+        }
 
         public static func bool(_ key: String) -> Bool? { flags.bool(key) }
         public static func int(_ key: String) -> Int? { flags.int(key) }

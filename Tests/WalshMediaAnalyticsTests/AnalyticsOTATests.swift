@@ -141,6 +141,42 @@ struct AnalyticsOTATests {
         }
     }
 
+    @Test func forEnvironment_resolvesAnyTypedChannelPayload() throws {
+        let flags = try AnalyticsOTACodec.decodeFlags(
+            Data(#"{"SplashScreenMinTimeMs":{"dev":1500,"testflight":1500,"prod":800},"theme":{"dev":"dark","testflight":"system","prod":"light"},"ratio":{"dev":1.5,"testflight":1.25,"prod":1.0},"beta":{"dev":true,"testflight":"yes","prod":false}}"#.utf8)
+        )
+
+        #expect(flags.forEnvironment("SplashScreenMinTimeMs", environment: "dev")?.intValue == 1500)
+        #expect(flags.forEnvironment("SplashScreenMinTimeMs", environment: "testflight")?.intValue == 1500)
+        #expect(flags.forEnvironment("SplashScreenMinTimeMs", environment: "prod")?.intValue == 800)
+
+        #expect(flags.forEnvironment("theme", environment: "dev")?.stringValue == "dark")
+        #expect(flags.forEnvironment("theme", environment: "prod")?.stringValue == "light")
+
+        #expect(flags.forEnvironment("ratio", environment: "dev")?.doubleValue == 1.5)
+        #expect(flags.forEnvironment("ratio", environment: "prod")?.doubleValue == 1.0)
+
+        #expect(flags.forEnvironment("beta", environment: "dev")?.boolValue == true)
+        #expect(flags.forEnvironment("beta", environment: "testflight")?.onOffValue == true)
+        #expect(flags.forEnvironment("beta", environment: "prod")?.boolValue == false)
+
+        // Scalar / wrong shape → nil (use flag / int / isEnabled instead).
+        let scalar = try AnalyticsOTACodec.decodeFlags(Data(#"{"SplashScreenMinTimeMs":1500}"#.utf8))
+        #expect(scalar.forEnvironment("SplashScreenMinTimeMs", environment: "dev") == nil)
+        #expect(scalar.int("SplashScreenMinTimeMs") == 1500)
+
+        let incomplete = try AnalyticsOTACodec.decodeFlags(
+            Data(#"{"SplashScreenMinTimeMs":{"dev":1500,"prod":800}}"#.utf8)
+        )
+        #expect(incomplete.forEnvironment("SplashScreenMinTimeMs", environment: "dev") == nil)
+
+        AnalyticsRuntime.resetForTests()
+        #expect(flags.forEnvironment("SplashScreenMinTimeMs") == nil)
+        AnalyticsRuntime.setEnvironment("prod")
+        #expect(flags.forEnvironment("SplashScreenMinTimeMs")?.intValue == 800)
+        AnalyticsRuntime.resetForTests()
+    }
+
     @Test func isEnabled_ignoresObjectsThatAreNotExactChannelPayloads() throws {
         let extraKey = try AnalyticsOTACodec.decodeFlags(
             Data(#"{"logos":{"dev":true,"testflight":true,"prod":false,"staging":true}}"#.utf8)
