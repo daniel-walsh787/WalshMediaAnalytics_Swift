@@ -27,9 +27,10 @@ enum AnalyticsFeatureRequestsCodec {
     struct VoterBody: Encodable {
         let device_id: String
         let user_id: String?
+        let message: String?
 
         enum CodingKeys: String, CodingKey {
-            case device_id, user_id
+            case device_id, user_id, message
         }
 
         func encode(to encoder: Encoder) throws {
@@ -38,6 +39,9 @@ enum AnalyticsFeatureRequestsCodec {
             if let user_id {
                 try container.encode(user_id, forKey: .user_id)
             }
+            if let message {
+                try container.encode(message, forKey: .message)
+            }
         }
     }
 
@@ -45,13 +49,41 @@ enum AnalyticsFeatureRequestsCodec {
         let requests: [FeatureRequest]?
         let items: [FeatureRequest]?
         let feature_requests: [FeatureRequest]?
+        let removed_ids: [RemovedID]?
 
         var all: [FeatureRequest]? {
             requests ?? items ?? feature_requests
         }
+
+        var removedIds: [String] {
+            (removed_ids ?? []).compactMap(\.stringValue)
+        }
+    }
+
+    /// Accepts string or int ids from `removed_ids`.
+    struct RemovedID: Decodable {
+        let stringValue: String?
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            if let s = try? container.decode(String.self) {
+                stringValue = s
+            } else if let i = try? container.decode(Int.self) {
+                stringValue = String(i)
+            } else {
+                stringValue = nil
+            }
+        }
     }
 
     struct SubmitResponse: Decodable {
+        let request: FeatureRequest?
+    }
+
+    struct ReportResponse: Decodable {
+        let already_reported: Bool?
+        let demoted: Bool?
+        let report_count: Int?
         let request: FeatureRequest?
     }
 
@@ -83,11 +115,20 @@ enum AnalyticsFeatureRequestsCodec {
         )
     }
 
-    static func encodeVoter(deviceID: String, userID: String?) throws -> Data {
-        try jsonEncoder().encode(
+    static func encodeVoter(deviceID: String, userID: String?, message: String? = nil) throws -> Data {
+        let trimmedMessage = message?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let capped: String?
+        if let trimmedMessage, !trimmedMessage.isEmpty {
+            capped = String(trimmedMessage.prefix(1000))
+        } else {
+            capped = nil
+        }
+        return try jsonEncoder().encode(
             VoterBody(
                 device_id: deviceID,
-                user_id: AnalyticsIngestCodec.normalizedUserID(userID)
+                user_id: AnalyticsIngestCodec.normalizedUserID(userID),
+                message: capped
             )
         )
     }
@@ -103,15 +144,30 @@ enum AnalyticsFeatureRequestsCodec {
         throw AnalyticsFeatureRequestsError.invalidResponse
     }
 
-    static func decodeList(_ data: Data) throws -> [FeatureRequest] {
+    static func decodeList(_ data: Data) throws -> FeatureRequestListResult {
         if let array = try? jsonDecoder().decode([FeatureRequest].self, from: data) {
-            return array
+            return FeatureRequestListResult(requests: array, removedIds: [])
         }
         if let wrapped = try? jsonDecoder().decode(ListResponse.self, from: data),
            let requests = wrapped.all {
-            return requests
+            return FeatureRequestListResult(requests: requests, removedIds: wrapped.removedIds)
         }
         throw AnalyticsFeatureRequestsError.invalidResponse
+    }
+
+    static func decodeReport(_ data: Data) throws -> FeatureRequestReportResult {
+        guard let wrapped = try? jsonDecoder().decode(ReportResponse.self, from: data) else {
+            throw AnalyticsFeatureRequestsError.invalidResponse
+        }
+        if wrapped.already_reported == true {
+            return FeatureRequestReportResult(alreadyReported: true)
+        }
+        return FeatureRequestReportResult(
+            alreadyReported: false,
+            demoted: wrapped.demoted ?? false,
+            reportCount: wrapped.report_count ?? 0,
+            request: wrapped.request
+        )
     }
 
     static func errorMessage(from data: Data) -> String? {
@@ -160,7 +216,7 @@ actor AnalyticsFeatureRequestsClient {
         sort: FeatureRequestSort,
         statusOrder: [FeatureRequestStatus]?,
         configuration: AnalyticsConfiguration
-    ) async throws -> [FeatureRequest] {
+    ) async throws -> FeatureRequestListResult {
         let credentials = try credentials(from: configuration)
         let context = try await requestContext(configuration: configuration)
         let url = try listURL(
@@ -187,6 +243,35 @@ actor AnalyticsFeatureRequestsClient {
 
     func unstar(id: String, configuration: AnalyticsConfiguration) async throws {
         try await vote(id: id, method: "DELETE", configuration: configuration)
+    }
+
+    func report(
+        id: String,
+        message: String?,
+        configuration: AnalyticsConfiguration
+    ) async throws -> FeatureRequestReportResult {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw AnalyticsFeatureRequestsError.invalidResponse
+        }
+        let credentials = try credentials(from: configuration)
+        let context = try await requestContext(configuration: configuration)
+        let body = try AnalyticsFeatureRequestsCodec.encodeVoter(
+            deviceID: context.deviceID,
+            userID: context.userID,
+            message: message
+        )
+        let url = credentials.baseURL
+            .appendingPathComponent("v1/feature-requests")
+            .appendingPathComponent(trimmed)
+            .appendingPathComponent("report")
+        let data = try await signedBodyRequest(
+            method: "POST",
+            url: url,
+            body: body,
+            credentials: credentials
+        )
+        return try AnalyticsFeatureRequestsCodec.decodeReport(data)
     }
 
     private func vote(

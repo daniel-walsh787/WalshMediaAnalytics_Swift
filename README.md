@@ -147,6 +147,7 @@ Analytics.FeatureRequests.submit(FeatureRequestDraft(title: "…", body: "…"))
 Analytics.FeatureRequests.list(sort: .stars)
 Analytics.FeatureRequests.star(id:)
 Analytics.FeatureRequests.unstar(id:)
+Analytics.FeatureRequests.report(id:message:)
 ```
 
 Prop values are `string` / `int` / `bool` only (`AnalyticsPropValue`). Event names are trimmed and must be 1–128 characters; invalid names are dropped.
@@ -167,21 +168,31 @@ let created = try await Analytics.FeatureRequests.submit(
 )
 // created.status == .pending until moderated in the portal
 
-let ranked = try await Analytics.FeatureRequests.list(sort: .stars)
+let page = try await Analytics.FeatureRequests.list(sort: .stars)
 // or: .recent, .status — optional statusOrder: [.comingSoon, .inProgress, .voting, …]
+// Drop demoted rows from any local cache:
+// cache.removeAll { page.removedIds.contains($0.id) }
 
-try await Analytics.FeatureRequests.star(id: ranked[0].id)
-try await Analytics.FeatureRequests.unstar(id: ranked[0].id)
+try await Analytics.FeatureRequests.star(id: page.requests[0].id)
+try await Analytics.FeatureRequests.unstar(id: page.requests[0].id)
+
+// Report inappropriate content (Worker emits alert events — do not Analytics.track report names)
+let report = try await Analytics.FeatureRequests.report(
+    id: page.requests[0].id,
+    message: "Spam / abusive"
+)
+// report.demoted == true on first unique report; report.alreadyReported on duplicate
 ```
 
 | Method | Path | Notes |
 |---|---|---|
-| `POST` | `/v1/feature-requests` | Body: `title`, `body`, `device_id`, `env`, optional `user_id`. Signed like ingest/push (`{timestamp}.{body}`). |
-| `GET` | `/v1/feature-requests` | Query: `sort`, optional `status_order`, `device_id`, optional `user_id` (for `viewer_starred`). Signed with empty body + `X-Timestamp`. |
+| `POST` | `/v1/feature-requests` | Body: `title`, `body`, `device_id`, optional `user_id` (legacy `env` ignored). Signed like ingest/push (`{timestamp}.{body}`). |
+| `GET` | `/v1/feature-requests` | Query: `sort`, optional `status_order`, `device_id`, optional `user_id` (for `viewer_starred`). Response: `requests` + `removed_ids` (demoted-after-report ids for cache eviction). Signed with empty body + `X-Timestamp`. |
 | `POST` | `/v1/feature-requests/{id}/star` | Body: `device_id`, optional `user_id`. |
 | `DELETE` | `/v1/feature-requests/{id}/star` | Same voter body; unmetered. |
+| `POST` | `/v1/feature-requests/{id}/report` | Body: `device_id`, optional `user_id`, optional `message`. No client `track()` — Worker owns alert events. |
 
-Statuses (API strings): `pending`, `voting`, `backlog`, `in_progress`, `coming_soon`, `complete`, `rejected`. Client list returns published rows only (not `pending` / soft-deleted). Models: `FeatureRequest`, `FeatureRequestDraft`, `FeatureRequestStatus`, `FeatureRequestSort`; errors via `AnalyticsFeatureRequestsError` (`unauthorized`, `quotaExceeded`, …).
+Statuses (API strings): `pending`, `voting`, `backlog`, `in_progress`, `coming_soon`, `complete`, `rejected`. Client list returns published rows only (not `pending` / soft-deleted). Models: `FeatureRequest`, `FeatureRequestDraft`, `FeatureRequestListResult`, `FeatureRequestReportResult`, `FeatureRequestStatus`, `FeatureRequestSort`; errors via `AnalyticsFeatureRequestsError` (`unauthorized`, `quotaExceeded`, …).
 
 ---
 

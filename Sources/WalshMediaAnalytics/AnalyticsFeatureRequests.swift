@@ -112,6 +112,40 @@ public struct FeatureRequest: Sendable, Equatable, Codable {
     }
 }
 
+/// Result of `Analytics.FeatureRequests.list` — published rows plus ids to drop from a local cache.
+public struct FeatureRequestListResult: Sendable, Equatable {
+    public var requests: [FeatureRequest]
+    /// Ids demoted to pending after a first inappropriate report (still live, not soft-deleted).
+    public var removedIds: [String]
+
+    public init(requests: [FeatureRequest], removedIds: [String] = []) {
+        self.requests = requests
+        self.removedIds = removedIds
+    }
+}
+
+/// Result of `Analytics.FeatureRequests.report`.
+public struct FeatureRequestReportResult: Sendable, Equatable {
+    /// True when this device/user already reported the request (no-op).
+    public var alreadyReported: Bool
+    /// True when this was the first unique report and the request was demoted to pending.
+    public var demoted: Bool
+    public var reportCount: Int
+    public var request: FeatureRequest?
+
+    public init(
+        alreadyReported: Bool,
+        demoted: Bool = false,
+        reportCount: Int = 0,
+        request: FeatureRequest? = nil
+    ) {
+        self.alreadyReported = alreadyReported
+        self.demoted = demoted
+        self.reportCount = reportCount
+        self.request = request
+    }
+}
+
 public enum AnalyticsFeatureRequestsError: Error, Equatable, LocalizedError {
     case notConfigured
     case unauthorized
@@ -152,8 +186,9 @@ extension Analytics {
     /// let created = try await Analytics.FeatureRequests.submit(
     ///     FeatureRequestDraft(title: "Dark mode", body: "Please add a dark theme.")
     /// )
-    /// let ranked = try await Analytics.FeatureRequests.list(sort: .stars)
-    /// try await Analytics.FeatureRequests.star(id: ranked[0].id)
+    /// let page = try await Analytics.FeatureRequests.list(sort: .stars)
+    /// try await Analytics.FeatureRequests.star(id: page.requests[0].id)
+    /// try await Analytics.FeatureRequests.report(id: page.requests[0].id, message: "Spam")
     /// ```
     public enum FeatureRequests {
         /// Create a request (`pending` until moderated).
@@ -171,12 +206,13 @@ extension Analytics {
         }
 
         /// Published requests (excludes `pending` and soft-deleted). Pass `device_id` / `user_id`
-        /// automatically so `viewer_starred` is accurate.
+        /// automatically so `viewer_starred` is accurate. Use `removedIds` to drop demoted rows
+        /// from a local cache.
         public static func list(
             sort: FeatureRequestSort = .stars,
             statusOrder: [FeatureRequestStatus]? = nil,
             using configuration: AnalyticsConfiguration? = nil
-        ) async throws -> [FeatureRequest] {
+        ) async throws -> FeatureRequestListResult {
             let configuration = try resolved(configuration)
             await cacheEnvironment(configuration)
             return try await AnalyticsFeatureRequestsClient.shared.list(
@@ -206,6 +242,23 @@ extension Analytics {
             await cacheEnvironment(configuration)
             try await AnalyticsFeatureRequestsClient.shared.unstar(
                 id: id,
+                configuration: configuration
+            )
+        }
+
+        /// Report an inappropriate published request. Does **not** emit analytics track events —
+        /// the Worker records the report and bumps alert matches server-side.
+        @discardableResult
+        public static func report(
+            id: String,
+            message: String? = nil,
+            using configuration: AnalyticsConfiguration? = nil
+        ) async throws -> FeatureRequestReportResult {
+            let configuration = try resolved(configuration)
+            await cacheEnvironment(configuration)
+            return try await AnalyticsFeatureRequestsClient.shared.report(
+                id: id,
+                message: message,
                 configuration: configuration
             )
         }
