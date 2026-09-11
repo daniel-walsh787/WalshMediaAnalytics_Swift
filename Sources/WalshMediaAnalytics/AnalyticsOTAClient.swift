@@ -277,8 +277,6 @@ struct AnalyticsOTADiskStore {
 actor AnalyticsOTAClient {
     static let shared = AnalyticsOTAClient()
 
-    private static let maxFileBytes = 6 * 1024 * 1024
-
     private let urlSession: URLSession
     private let defaults: UserDefaults
     private let fileManager: FileManager
@@ -510,9 +508,6 @@ actor AnalyticsOTAClient {
         store: AnalyticsOTADiskStore,
         notModified: Bool
     ) throws -> AnalyticsOTACachedFile {
-        guard data.count <= Self.maxFileBytes else {
-            throw AnalyticsOTAError.httpStatus(413, message: "OTA file exceeds \(Self.maxFileBytes) bytes")
-        }
         if persist == .purgable,
            let durable = store.cachedFile(for: path, persist: .durable),
            AnalyticsOTACodec.etagsMatch(durable.etag, etag) {
