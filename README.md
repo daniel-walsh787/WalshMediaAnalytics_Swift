@@ -196,6 +196,51 @@ Statuses (API strings): `pending`, `voting`, `backlog`, `in_progress`, `coming_s
 
 ---
 
+## Ads (optional)
+
+Configure campaigns in the Analytics dashboard **Ads** tab (one campaign can target multiple apps). On iOS, after `Analytics.start`, the SDK automatically:
+
+1. Fetches `GET /v1/ads/active`
+2. Rolls each campaign’s session percent
+3. Drops creatives whose `ios_url_scheme` opens (`UIApplication.shared.canOpenURL` — already installed)
+4. Reports missing `LSApplicationQueriesSchemes` entries to the portal
+5. Picks **one** random remaining creative for this process session
+6. After the campaign’s delay, presents a page sheet (`WKWebView` + close). Link taps inside the web view count as clicks; the X button does not.
+
+```swift
+// Default: auto-present after Analytics.start (iOS)
+
+// Opt out of auto UI, then present yourself:
+Analytics.Ads.disableAutoPresent()
+Analytics.start(.fromInfoPlist())
+_ = try await Analytics.Ads.presentIfEligible()
+
+// Or fetch / select without presenting:
+let campaigns = try await Analytics.Ads.refresh()
+let pick = try await Analytics.Ads.selectEligible()
+```
+
+Declare every ad URL scheme you want to query in the host app’s Info.plist:
+
+```xml
+<key>LSApplicationQueriesSchemes</key>
+<array>
+  <string>tripfuel</string>
+</array>
+```
+
+If a scheme is configured on an ad but missing from that list, the SDK posts a warning the portal shows under the campaign (e.g. `Airbook 1.6 missing url scheme tripfuel:// from LSApplicationQueriesSchemes`).
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/v1/ads/active` | Enabled campaigns for this app. Sign empty body + `X-Timestamp`. |
+| `POST` | `/v1/ads/warnings` | Body: `campaign_id`, `scheme`, `app_version`. |
+| `POST` | `/v1/ads/events` | Body: `type` (`impression` \| `click`), `campaign_id`, `ad_id`. |
+
+Public API: `Analytics.Ads`, models `AnalyticsAdCampaign` / `AnalyticsAdCreative` / `AnalyticsAdSelection`, errors `AnalyticsAdsError`. macOS: fetch/select helpers only (no sheet).
+
+---
+
 ## Push notifications (optional)
 
 Push is **fully optional**. Apps that only use analytics and OTA:

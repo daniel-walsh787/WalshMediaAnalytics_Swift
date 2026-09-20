@@ -59,6 +59,15 @@ public enum Analytics {
         Task { @MainActor in
             AnalyticsClient.shared.start(configuration)
         }
+        #if os(iOS)
+        Task {
+            guard !AnalyticsAdsSessionGate.isAutoPresentDisabled else { return }
+            guard configuration.isConfigured else { return }
+            // Wait briefly so the root UI is up after launch.
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            _ = try? await Analytics.Ads.presentIfEligible(using: configuration)
+        }
+        #endif
     }
 
     public static func track(_ name: String, _ props: [String: AnalyticsPropValue] = [:]) {
