@@ -3,6 +3,14 @@ import Foundation
 import UIKit
 #endif
 
+/// Who a campaign targets relative to the host app’s premium / IAP status.
+public enum AnalyticsAdAudience: String, Sendable, Equatable, Codable {
+    /// Default — free / non‑subscribers only.
+    case nonPremium = "non_premium"
+    case premium
+    case everyone
+}
+
 /// An ad creative returned by `GET /v1/ads/active`.
 public struct AnalyticsAdCreative: Sendable, Equatable, Codable {
     public var id: Int
@@ -31,10 +39,11 @@ public struct AnalyticsAdCampaign: Sendable, Equatable, Codable {
     public var name: String
     public var sessionPercent: Int
     public var delaySeconds: Int
+    public var audience: AnalyticsAdAudience
     public var ads: [AnalyticsAdCreative]
 
     enum CodingKeys: String, CodingKey {
-        case id, name, ads
+        case id, name, ads, audience
         case sessionPercent = "session_percent"
         case delaySeconds = "delay_seconds"
     }
@@ -44,13 +53,25 @@ public struct AnalyticsAdCampaign: Sendable, Equatable, Codable {
         name: String,
         sessionPercent: Int,
         delaySeconds: Int,
+        audience: AnalyticsAdAudience = .nonPremium,
         ads: [AnalyticsAdCreative]
     ) {
         self.id = id
         self.name = name
         self.sessionPercent = sessionPercent
         self.delaySeconds = delaySeconds
+        self.audience = audience
         self.ads = ads
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(Int.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        sessionPercent = try container.decode(Int.self, forKey: .sessionPercent)
+        delaySeconds = try container.decode(Int.self, forKey: .delaySeconds)
+        audience = (try? container.decode(AnalyticsAdAudience.self, forKey: .audience)) ?? .nonPremium
+        ads = try container.decode([AnalyticsAdCreative].self, forKey: .ads)
     }
 }
 
@@ -95,11 +116,14 @@ enum AnalyticsAdsSessionGate {
     private static let lock = NSLock()
     private static var presentedThisSession = false
     private static var autoPresentDisabled = false
+    /// Explicit override from `Analytics.Ads.setPremium`. `nil` → use configuration callback.
+    private static var premiumOverride: Bool?
 
     static func resetForTests() {
         lock.lock()
         presentedThisSession = false
         autoPresentDisabled = false
+        premiumOverride = nil
         lock.unlock()
     }
 
@@ -126,6 +150,18 @@ enum AnalyticsAdsSessionGate {
         autoPresentDisabled = value
         lock.unlock()
     }
+
+    static func setPremiumOverride(_ value: Bool?) {
+        lock.lock()
+        premiumOverride = value
+        lock.unlock()
+    }
+
+    static var premiumOverrideValue: Bool? {
+        lock.lock()
+        defer { lock.unlock() }
+        return premiumOverride
+    }
 }
 
 extension Analytics {
@@ -134,10 +170,20 @@ extension Analytics {
     /// After `Analytics.start`, iOS automatically fetches active campaigns and may present
     /// one eligible ad as a sheet (WKWebView + close). Call `disableAutoPresent()` before
     /// `start` if the host app will call `presentIfEligible()` itself.
+    ///
+    /// Tell the SDK whether the user has an active premium / IAP entitlement via
+    /// `setPremium(_:)` or `AnalyticsConfiguration.isPremium` so campaigns can target
+    /// non‑premium (default), premium, or everyone.
     public enum Ads {
         /// Disable the automatic sheet that runs after `Analytics.start` (iOS).
         public static func disableAutoPresent() {
             AnalyticsAdsSessionGate.setAutoPresentDisabled(true)
+        }
+
+        /// Report the user’s premium / IAP status (call when it changes).
+        /// Overrides `AnalyticsConfiguration.isPremium` while set.
+        public static func setPremium(_ isPremium: Bool) {
+            AnalyticsAdsSessionGate.setPremiumOverride(isPremium)
         }
 
         /// Fetch enabled campaigns for this app (no presentation).
@@ -148,12 +194,14 @@ extension Analytics {
             return try await AnalyticsAdsClient.shared.fetchActive(configuration: config)
         }
 
-        /// Pick one eligible ad (session %, already-installed schemes filtered) without presenting.
+        /// Pick one eligible ad (audience, session %, already-installed schemes filtered) without presenting.
         public static func selectEligible(
             using configuration: AnalyticsConfiguration? = nil
         ) async throws -> AnalyticsAdSelection? {
-            let campaigns = try await refresh(using: configuration)
-            return AnalyticsAdsSelector.select(from: campaigns)
+            let config = try resolvedConfiguration(configuration)
+            let campaigns = try await AnalyticsAdsClient.shared.fetchActive(configuration: config)
+            let premium = await resolvePremium(configuration: config)
+            return AnalyticsAdsSelector.select(from: campaigns, isPremium: premium)
         }
 
         /// Fetch, select, wait for campaign delay, then present (iOS sheet). No-op if already shown this session.
@@ -168,7 +216,10 @@ extension Analytics {
                 campaigns: campaigns,
                 configuration: config
             )
-            guard let selection = AnalyticsAdsSelector.select(from: campaigns) else { return nil }
+            let premium = await resolvePremium(configuration: config)
+            guard let selection = AnalyticsAdsSelector.select(from: campaigns, isPremium: premium) else {
+                return nil
+            }
 
             let delay = max(0, selection.campaign.delaySeconds)
             if delay > 0 {
@@ -197,13 +248,24 @@ extension Analytics {
             if let stored = AnalyticsRuntime.configuration() { return stored }
             throw AnalyticsAdsError.notConfigured
         }
+
+        fileprivate static func resolvePremium(configuration: AnalyticsConfiguration) async -> Bool {
+            if let override = AnalyticsAdsSessionGate.premiumOverrideValue {
+                return override
+            }
+            return await configuration.isPremium()
+        }
     }
 }
 
 enum AnalyticsAdsSelector {
-    static func select(from campaigns: [AnalyticsAdCampaign]) -> AnalyticsAdSelection? {
+    static func select(
+        from campaigns: [AnalyticsAdCampaign],
+        isPremium: Bool
+    ) -> AnalyticsAdSelection? {
         var pool: [(AnalyticsAdCampaign, AnalyticsAdCreative)] = []
         for campaign in campaigns {
+            guard audienceAllows(campaign.audience, isPremium: isPremium) else { continue }
             let percent = max(0, min(100, campaign.sessionPercent))
             guard percent > 0 else { continue }
             if percent < 100 {
@@ -219,6 +281,17 @@ enum AnalyticsAdsSelector {
         }
         guard let pick = pool.randomElement() else { return nil }
         return AnalyticsAdSelection(campaign: pick.0, ad: pick.1)
+    }
+
+    static func audienceAllows(_ audience: AnalyticsAdAudience, isPremium: Bool) -> Bool {
+        switch audience {
+        case .everyone:
+            return true
+        case .premium:
+            return isPremium
+        case .nonPremium:
+            return !isPremium
+        }
     }
 
     static func reportMissingSchemes(

@@ -10,6 +10,8 @@ public struct AnalyticsConfiguration: Sendable {
     public var reportsCrashes: Bool
     public var environment: @Sendable () async -> String
     public var userID: @Sendable () async -> String?
+    /// Whether the current user has an active premium / IAP entitlement (for Ads audience targeting).
+    public var isPremium: @Sendable () async -> Bool
 
     public init(
         appId: String,
@@ -18,7 +20,8 @@ public struct AnalyticsConfiguration: Sendable {
         platform: String = Self.currentPlatform,
         reportsCrashes: Bool = true,
         environment: @escaping @Sendable () async -> String = { await AnalyticsEnvironment.current() },
-        userID: @escaping @Sendable () async -> String? = { nil }
+        userID: @escaping @Sendable () async -> String? = { nil },
+        isPremium: @escaping @Sendable () async -> Bool = { false }
     ) {
         self.appId = appId
         self.ingestURL = ingestURL
@@ -27,6 +30,7 @@ public struct AnalyticsConfiguration: Sendable {
         self.reportsCrashes = reportsCrashes
         self.environment = environment
         self.userID = userID
+        self.isPremium = isPremium
     }
 
     public static let defaultIngestURL = URL(string: "https://analytics.walshmedia.net.au/v1/ingest")
@@ -74,7 +78,8 @@ public struct AnalyticsConfiguration: Sendable {
         platform: String = currentPlatform,
         reportsCrashes: Bool = true,
         environment: (@Sendable () async -> String)? = nil,
-        userID: @escaping @Sendable () async -> String? = { nil }
+        userID: @escaping @Sendable () async -> String? = { nil },
+        isPremium: @escaping @Sendable () async -> Bool = { false }
     ) -> AnalyticsConfiguration {
         AnalyticsConfiguration(
             appId: normalizedAppId(appId) ?? plistAppId(from: bundle) ?? "",
@@ -83,7 +88,8 @@ public struct AnalyticsConfiguration: Sendable {
             platform: platform,
             reportsCrashes: reportsCrashes,
             environment: environment ?? { await AnalyticsEnvironment.current() },
-            userID: userID
+            userID: userID,
+            isPremium: isPremium
         )
     }
 

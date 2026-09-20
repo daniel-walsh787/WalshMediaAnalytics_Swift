@@ -198,16 +198,23 @@ Statuses (API strings): `pending`, `voting`, `backlog`, `in_progress`, `coming_s
 
 ## Ads (optional)
 
-Configure campaigns in the Analytics dashboard **Ads** tab (one campaign can target multiple apps). On iOS, after `Analytics.start`, the SDK automatically:
+Configure campaigns in the Analytics dashboard **Ads** tab (one campaign can target multiple apps). Each campaign has an **audience**: `non_premium` (default), `premium`, or `everyone`. On iOS, after `Analytics.start`, the SDK automatically:
 
 1. Fetches `GET /v1/ads/active`
-2. Rolls each campaign’s session percent
-3. Drops creatives whose `ios_url_scheme` opens (`UIApplication.shared.canOpenURL` — already installed)
-4. Reports missing `LSApplicationQueriesSchemes` entries to the portal
-5. Picks **one** random remaining creative for this process session
-6. After the campaign’s delay, presents a page sheet (`WKWebView` + close). Link taps inside the web view count as clicks; the X button does not.
+2. Keeps campaigns matching the user’s premium / IAP status
+3. Rolls each remaining campaign’s session percent
+4. Drops creatives whose `ios_url_scheme` opens (`UIApplication.shared.canOpenURL` — already installed)
+5. Reports missing `LSApplicationQueriesSchemes` entries to the portal
+6. Picks **one** random remaining creative for this process session
+7. After the campaign’s delay, presents a page sheet (`WKWebView` + close). Link taps inside the web view count as clicks; the X button does not.
 
 ```swift
+// Report IAP / subscription status (update whenever it changes):
+Analytics.Ads.setPremium(hasActiveSubscription)
+
+// Or pass a callback at start:
+Analytics.start(.fromInfoPlist(isPremium: { await SubscriptionStore.shared.isPremium }))
+
 // Default: auto-present after Analytics.start (iOS)
 
 // Opt out of auto UI, then present yourself:
@@ -233,11 +240,11 @@ If a scheme is configured on an ad but missing from that list, the SDK posts a w
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/v1/ads/active` | Enabled campaigns for this app. Sign empty body + `X-Timestamp`. |
+| `GET` | `/v1/ads/active` | Enabled campaigns for this app (`audience` on each). Sign empty body + `X-Timestamp`. |
 | `POST` | `/v1/ads/warnings` | Body: `campaign_id`, `scheme`, `app_version`. |
 | `POST` | `/v1/ads/events` | Body: `type` (`impression` \| `click`), `campaign_id`, `ad_id`. |
 
-Public API: `Analytics.Ads`, models `AnalyticsAdCampaign` / `AnalyticsAdCreative` / `AnalyticsAdSelection`, errors `AnalyticsAdsError`. macOS: fetch/select helpers only (no sheet).
+Public API: `Analytics.Ads` (`setPremium`, …), models `AnalyticsAdCampaign` / `AnalyticsAdAudience` / `AnalyticsAdCreative` / `AnalyticsAdSelection`, errors `AnalyticsAdsError`. macOS: fetch/select helpers only (no sheet). Default premium status is `false` (non‑premium).
 
 ---
 
