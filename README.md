@@ -133,7 +133,7 @@ Public API:
 ```swift
 Analytics.start(_ configuration)
 Analytics.track(_ name: String, _ props: [String: AnalyticsPropValue] = [:])
-Analytics.trackHTTP(endpoint:statusCode:durationMs:timedOut:appResult:extra:logOnlyOnError:)
+Analytics.trackHTTP(endpoint:statusCode:durationMs:timedOut:appResult:timeoutReason:urlErrorCode:extra:logOnlyOnError:)
 Analytics.flushNow()
 Analytics.OTA.sync()
 Analytics.OTA.sync(downloadFiles: .matching { $0 == "airlines.csv" })
@@ -426,7 +426,7 @@ Suggested shared names:
 | `button_tap` | Primary controls | `screen`, `button` |
 | `purchase` | Successful IAP | `product` |
 | `error` | Handled failure you care about | `code`, `area` (no message dumps with PII) |
-| `http_call` | An outbound HTTP (or HTTP-like) request finished | `endpoint`, `http_status`, `duration_ms`, `timed_out`, `app_result` |
+| `http_call` | An outbound HTTP (or HTTP-like) request finished | `endpoint`, `http_status`, `duration_ms`, `timed_out`, `app_result`, `timeout_reason`, `url_error_code` |
 | `app_crash` | MetricKit crash (automatic) | `exception_type`, `exception_code`, `exception_name`, `signal`, `signal_name`, `reason`, `exception_message`, `version`, `build`, `stack`, `stack_app`, `binary_uuid`, `stack_truncated` |
 | `app_hang` | MetricKit hang (automatic) | `hang_ms`, `version`, `build`, `stack`, `stack_app`, `binary_uuid`, `stack_truncated` |
 
@@ -446,9 +446,11 @@ Log outbound requests with **`http_call`**. The prop keys are fixed so AirBook, 
 |---|---|---|
 | `endpoint` | string | Stable id you choose (`naips.briefing`, `subscription.session`). Not a full URL (query strings often have tokens / PII). Max 128 chars. |
 | `http_status` | int | HTTP response code. Omit when there was no response. |
-| `duration_ms` | int | Round-trip time. **Omit when `timed_out` is true.** |
-| `timed_out` | bool | Always set. |
+| `duration_ms` | int | Round-trip time when known, **including when `timed_out` is true**. |
+| `timed_out` | bool | Always set. `true` only when the **client** gave up waiting (e.g. `URLError.timedOut`). A server 504 is not a client timeout. |
 | `app_result` | `success` / `error` | Optional. Use when HTTP 200 is not enough (`{"status":"error"}`, empty body, login rejected, …). |
+| `timeout_reason` | string | Set when `timed_out` is true. Default `url_timeout`. Hosts may override via `extra` (e.g. `navigation_timeout` for WKWebView deadlines). Max 64 chars. |
+| `url_error_code` | int | On transport failures: `URLError.code.rawValue` (e.g. `-1001` timed out, `-999` cancelled). Hosts may override via `extra`. |
 
 Drop-in for `URLSession`:
 
@@ -489,7 +491,7 @@ do {
 }
 ```
 
-Pass `timedOut: true` on the stopwatch when your own timeout is not a `URLError.timedOut` (WKWebView navigation deadlines). Do not wrap the analytics ingest `URLSession` call — that would recurse.
+Pass `timedOut: true` on the stopwatch when your own timeout is not a `URLError.timedOut` (WKWebView navigation deadlines). Override the reason with `extra: [AnalyticsHTTP.Prop.timeoutReason: .string("navigation_timeout")]` — host `extra` wins over the default `url_timeout`. Do not wrap the analytics ingest `URLSession` call — that would recurse.
 
 ---
 

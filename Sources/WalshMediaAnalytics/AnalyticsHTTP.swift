@@ -41,7 +41,12 @@ public enum AnalyticsHTTP {
         public static let durationMs = "duration_ms"
         public static let timedOut = "timed_out"
         public static let appResult = "app_result"
+        public static let timeoutReason = "timeout_reason"
+        public static let urlErrorCode = "url_error_code"
     }
+
+    /// Default `timeout_reason` when `timed_out` is true and the host did not supply one.
+    public static let defaultTimeoutReason = "url_timeout"
 
     public static func isTimeout(_ error: Error) -> Bool {
         if let urlError = error as? URLError {
@@ -49,6 +54,18 @@ public enum AnalyticsHTTP {
         }
         let nsError = error as NSError
         return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorTimedOut
+    }
+
+    /// `URLError.code.rawValue` when the failure is a `URLError` / `NSURLErrorDomain`.
+    public static func urlErrorCode(from error: Error) -> Int? {
+        if let urlError = error as? URLError {
+            return urlError.code.rawValue
+        }
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain {
+            return nsError.code
+        }
+        return nil
     }
 
     /// Runs a `URLSession.data` request and emits `http_call`.
@@ -92,7 +109,6 @@ public enum AnalyticsHTTP {
     }
 
     /// Times `work`, classifies timeouts, and emits `http_call`.
-    /// Duration is omitted when the request timed out.
     /// Set `logOnlyOnError` for high-volume assets (images) so 2xx successes are skipped.
     @discardableResult
     public static func measure(
@@ -140,6 +156,8 @@ public enum AnalyticsHTTP {
         durationMs: Int?,
         timedOut: Bool,
         appResult: AnalyticsHTTPAppResult?,
+        timeoutReason: String? = nil,
+        urlErrorCode: Int? = nil,
         extra: [String: AnalyticsPropValue]
     ) -> [String: AnalyticsPropValue] {
         var props = extra
@@ -148,6 +166,8 @@ public enum AnalyticsHTTP {
         props[Prop.durationMs] = nil
         props[Prop.timedOut] = nil
         props[Prop.appResult] = nil
+        props[Prop.timeoutReason] = nil
+        props[Prop.urlErrorCode] = nil
 
         let trimmed = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty {
@@ -156,14 +176,51 @@ public enum AnalyticsHTTP {
         if let statusCode {
             props[Prop.statusCode] = .int(statusCode)
         }
-        if !timedOut, let durationMs, durationMs >= 0 {
+        if let durationMs, durationMs >= 0 {
             props[Prop.durationMs] = .int(durationMs)
         }
         props[Prop.timedOut] = .bool(timedOut)
         if let appResult {
             props[Prop.appResult] = .string(appResult.rawValue)
         }
+        if let timeoutReason {
+            let reason = timeoutReason.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !reason.isEmpty {
+                props[Prop.timeoutReason] = .string(String(reason.prefix(64)))
+            }
+        }
+        if let urlErrorCode {
+            props[Prop.urlErrorCode] = .int(urlErrorCode)
+        }
         return props
+    }
+
+    /// Prefer host-supplied `timeout_reason` / `url_error_code` in `extra`; otherwise fill from timeout / error.
+    static func resolveHangProps(
+        timedOut: Bool,
+        error: Error?,
+        extra: [String: AnalyticsPropValue]
+    ) -> (timeoutReason: String?, urlErrorCode: Int?) {
+        let timeoutReason: String?
+        if case .string(let reason) = extra[Prop.timeoutReason] {
+            let trimmed = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+            timeoutReason = trimmed.isEmpty ? nil : trimmed
+        } else if timedOut {
+            timeoutReason = defaultTimeoutReason
+        } else {
+            timeoutReason = nil
+        }
+
+        let urlErrorCode: Int?
+        if case .int(let code) = extra[Prop.urlErrorCode] {
+            urlErrorCode = code
+        } else if let error {
+            urlErrorCode = Self.urlErrorCode(from: error)
+        } else {
+            urlErrorCode = nil
+        }
+
+        return (timeoutReason, urlErrorCode)
     }
 
     /// Call `track` once when an HTTP (or HTTP-like) operation finishes.
@@ -188,12 +245,15 @@ public enum AnalyticsHTTP {
             extra: [String: AnalyticsPropValue] = [:],
             logOnlyOnError: Bool? = nil
         ) {
+            let hang = AnalyticsHTTP.resolveHangProps(timedOut: timedOut, error: nil, extra: extra)
             Analytics.trackHTTP(
                 endpoint: endpoint,
                 statusCode: statusCode,
-                durationMs: timedOut ? nil : durationMs,
+                durationMs: durationMs,
                 timedOut: timedOut,
                 appResult: appResult,
+                timeoutReason: hang.timeoutReason,
+                urlErrorCode: hang.urlErrorCode,
                 extra: extra,
                 logOnlyOnError: logOnlyOnError ?? self.logOnlyOnError
             )
@@ -207,19 +267,25 @@ public enum AnalyticsHTTP {
             extra: [String: AnalyticsPropValue] = [:],
             logOnlyOnError: Bool? = nil
         ) {
-            track(
+            let resolvedTimedOut = timedOut ?? AnalyticsHTTP.isTimeout(error)
+            let hang = AnalyticsHTTP.resolveHangProps(timedOut: resolvedTimedOut, error: error, extra: extra)
+            Analytics.trackHTTP(
                 endpoint: endpoint,
-                timedOut: timedOut ?? AnalyticsHTTP.isTimeout(error),
+                statusCode: nil,
+                durationMs: durationMs,
+                timedOut: resolvedTimedOut,
                 appResult: appResult,
+                timeoutReason: hang.timeoutReason,
+                urlErrorCode: hang.urlErrorCode,
                 extra: extra,
-                logOnlyOnError: logOnlyOnError
+                logOnlyOnError: logOnlyOnError ?? self.logOnlyOnError
             )
         }
     }
 }
 
 extension Analytics {
-    /// Emits a shared `http_call` event. `durationMs` is dropped when `timedOut` is true.
+    /// Emits a shared `http_call` event. Always includes `duration_ms` when known.
     /// Pass `logOnlyOnError: true` for noisy endpoints (images) so only failures are stored.
     public static func trackHTTP(
         endpoint: String,
@@ -227,6 +293,8 @@ extension Analytics {
         durationMs: Int? = nil,
         timedOut: Bool = false,
         appResult: AnalyticsHTTPAppResult? = nil,
+        timeoutReason: String? = nil,
+        urlErrorCode: Int? = nil,
         extra: [String: AnalyticsPropValue] = [:],
         logOnlyOnError: Bool = false
     ) {
@@ -246,6 +314,8 @@ extension Analytics {
                 durationMs: durationMs,
                 timedOut: timedOut,
                 appResult: appResult,
+                timeoutReason: timeoutReason,
+                urlErrorCode: urlErrorCode,
                 extra: extra
             )
         )

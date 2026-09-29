@@ -261,20 +261,55 @@ struct WalshMediaAnalyticsTests {
         #expect(AnalyticsDeviceNames.marketingName(for: "unknown-device") == nil)
     }
 
-    @Test func httpCall_omitsDurationWhenTimedOut() {
+    @Test func httpCall_keepsDurationWhenTimedOut() {
         let props = AnalyticsHTTP.makeProps(
             endpoint: "api.login",
             statusCode: nil,
             durationMs: 1_200,
             timedOut: true,
             appResult: .error,
+            timeoutReason: AnalyticsHTTP.defaultTimeoutReason,
+            urlErrorCode: URLError.timedOut.rawValue,
             extra: [:]
         )
         #expect(props[AnalyticsHTTP.Prop.endpoint] == .string("api.login"))
         #expect(props[AnalyticsHTTP.Prop.timedOut] == .bool(true))
-        #expect(props[AnalyticsHTTP.Prop.durationMs] == nil)
+        #expect(props[AnalyticsHTTP.Prop.durationMs] == .int(1_200))
+        #expect(props[AnalyticsHTTP.Prop.timeoutReason] == .string("url_timeout"))
+        #expect(props[AnalyticsHTTP.Prop.urlErrorCode] == .int(URLError.timedOut.rawValue))
         #expect(props[AnalyticsHTTP.Prop.statusCode] == nil)
         #expect(props[AnalyticsHTTP.Prop.appResult] == .string("error"))
+    }
+
+    @Test func httpCall_extraWinsForHangProps() {
+        let hang = AnalyticsHTTP.resolveHangProps(
+            timedOut: true,
+            error: URLError(.timedOut),
+            extra: [
+                AnalyticsHTTP.Prop.timeoutReason: .string("navigation_timeout"),
+                AnalyticsHTTP.Prop.urlErrorCode: .int(-9_999),
+            ]
+        )
+        #expect(hang.timeoutReason == "navigation_timeout")
+        #expect(hang.urlErrorCode == -9_999)
+    }
+
+    @Test func httpCall_autoFillsHangPropsFromError() {
+        let hang = AnalyticsHTTP.resolveHangProps(
+            timedOut: true,
+            error: URLError(.timedOut),
+            extra: [:]
+        )
+        #expect(hang.timeoutReason == "url_timeout")
+        #expect(hang.urlErrorCode == URLError.timedOut.rawValue)
+
+        let cancelled = AnalyticsHTTP.resolveHangProps(
+            timedOut: false,
+            error: URLError(.cancelled),
+            extra: [:]
+        )
+        #expect(cancelled.timeoutReason == nil)
+        #expect(cancelled.urlErrorCode == URLError.cancelled.rawValue)
     }
 
     @Test func httpCall_includesStatusDurationAndAppResult() {
