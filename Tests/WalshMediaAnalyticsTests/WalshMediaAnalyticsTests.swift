@@ -436,4 +436,43 @@ struct WalshMediaAnalyticsTests {
             )
         )
     }
+
+    @Test func diagnosticContext_keepsLastFiveAtOrBeforeDiagnosticEnd() {
+        let suite = "analytics.diagnostic.tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            AnalyticsDiagnosticContext.resetForTests(defaults: defaults)
+        }
+        let start = Date(timeIntervalSince1970: 1_700_000_000)
+        let names = ["Logbook", "Logbook/Flight", "Logbook/Flight/Weather", "Logbook/Flight", "Settings", "Settings/Export", "Stats"]
+        for (offset, name) in names.enumerated() {
+            AnalyticsDiagnosticContext.record(
+                screen: name,
+                at: start.addingTimeInterval(TimeInterval(offset * 60)),
+                defaults: defaults
+            )
+        }
+        AnalyticsDiagnosticContext.record(screen: "Stats", at: start.addingTimeInterval(400), defaults: defaults)
+
+        let duringWeather = start.addingTimeInterval(2 * 60 + 10)
+        let json = AnalyticsDiagnosticContext.screensJSON(atOrBefore: duringWeather, defaults: defaults)
+        #expect(
+            json == "["
+                + "{\"screen\":\"Logbook\",\"at\":\"2023-11-14T22:13:20Z\"},"
+                + "{\"screen\":\"Logbook/Flight\",\"at\":\"2023-11-14T22:14:20Z\"},"
+                + "{\"screen\":\"Logbook/Flight/Weather\",\"at\":\"2023-11-14T22:15:20Z\"}"
+                + "]"
+        )
+
+        let mapped = AnalyticsCrashMapper.crash(screens: json)
+        #expect(mapped.props["screens"] == .string(json ?? ""))
+
+        let after = AnalyticsDiagnosticContext.screensJSON(
+            atOrBefore: start.addingTimeInterval(10_000),
+            defaults: defaults
+        )
+        #expect(after?.contains("\"screen\":\"Stats\"") == true)
+        #expect(after?.contains("Logbook\",") == false)
+    }
 }

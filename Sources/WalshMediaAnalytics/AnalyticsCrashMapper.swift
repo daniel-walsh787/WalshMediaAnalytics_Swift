@@ -37,7 +37,8 @@ public enum AnalyticsCrashMapper {
         version: String? = nil,
         build: String? = nil,
         callStackJSON: Data? = nil,
-        appBinaryName: String? = nil
+        appBinaryName: String? = nil,
+        screens: String? = nil
     ) -> MappedEvent {
         makeEvent(
             name: "app_crash",
@@ -50,7 +51,8 @@ public enum AnalyticsCrashMapper {
             build: build,
             hangMilliseconds: nil,
             callStackJSON: callStackJSON,
-            appBinaryName: appBinaryName
+            appBinaryName: appBinaryName,
+            screens: screens
         )
     }
 
@@ -59,7 +61,8 @@ public enum AnalyticsCrashMapper {
         version: String? = nil,
         build: String? = nil,
         callStackJSON: Data? = nil,
-        appBinaryName: String? = nil
+        appBinaryName: String? = nil,
+        screens: String? = nil
     ) -> MappedEvent {
         makeEvent(
             name: "app_hang",
@@ -72,7 +75,8 @@ public enum AnalyticsCrashMapper {
             build: build,
             hangMilliseconds: hangMilliseconds,
             callStackJSON: callStackJSON,
-            appBinaryName: appBinaryName
+            appBinaryName: appBinaryName,
+            screens: screens
         )
     }
 
@@ -181,7 +185,8 @@ public enum AnalyticsCrashMapper {
         build: String?,
         hangMilliseconds: Int?,
         callStackJSON: Data?,
-        appBinaryName: String?
+        appBinaryName: String?,
+        screens: String?
     ) -> MappedEvent {
         var props: [String: AnalyticsPropValue] = [:]
         if let exceptionType {
@@ -226,6 +231,9 @@ public enum AnalyticsCrashMapper {
                 props["binary_uuid"] = .string(uuid)
             }
             props["stack_truncated"] = .bool(flattened.truncated)
+        }
+        if let screens = nonempty(screens) {
+            props["screens"] = .string(truncate(screens, maxLength: 2048))
         }
         return MappedEvent(name: name, props: props)
     }

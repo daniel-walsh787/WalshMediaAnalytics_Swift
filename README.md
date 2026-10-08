@@ -427,8 +427,8 @@ Suggested shared names:
 | `purchase` | Successful IAP | `product` |
 | `error` | Handled failure you care about | `code`, `area` (no message dumps with PII) |
 | `http_call` | An outbound HTTP (or HTTP-like) request finished | `endpoint`, `http_status`, `duration_ms`, `timed_out`, `app_result`, `timeout_reason`, `url_error_code` |
-| `app_crash` | MetricKit crash (automatic) | `exception_type`, `exception_code`, `exception_name`, `signal`, `signal_name`, `reason`, `exception_message`, `version`, `build`, `stack`, `stack_app`, `binary_uuid`, `stack_truncated` |
-| `app_hang` | MetricKit hang (automatic) | `hang_ms`, `version`, `build`, `stack`, `stack_app`, `binary_uuid`, `stack_truncated` |
+| `app_crash` | MetricKit crash (automatic) | `exception_type`, `exception_code`, `exception_name`, `signal`, `signal_name`, `reason`, `exception_message`, `version`, `build`, `stack`, `stack_app`, `binary_uuid`, `stack_truncated`, `screens` |
+| `app_hang` | MetricKit hang (automatic) | `hang_ms`, `version`, `build`, `stack`, `stack_app`, `binary_uuid`, `stack_truncated`, `screens` |
 
 Product-specific names are fine (`flight_logged`, `backup_created`). Keep them stable — the dashboard groups by exact string.
 
@@ -519,6 +519,8 @@ The Worker also rate-limits **10 requests / minute / IP**. Office NAT shares an 
 **Install id:** Keychain UUID per install (not IDFV-as-PII, not Apple ID). Fallback UserDefaults, then migrate into Keychain.
 
 **Crashes:** MetricKit diagnostics arrive on a **later launch**. `stack` is unsybolicated (`AirBook+0x1a2b`). `stack_app` is app-binary frames with `binaryUUID` (`AirBook+0x9e6cc8@UUID`) so a matching dSYM can be used with `atos`. `binary_uuid` is the app frame UUID. Jetsam / some watchdog kills may not appear. This is not Crashlytics.
+
+**Screen trail:** Call `Analytics.setDiagnosticContext(screen:)` when the visible screen changes (`Logbook/Flight/Weather`). The SDK keeps the last 30 names on disk and, when a crash or hang is delivered, adds `screens`: a JSON string of up to the last five `{screen, at}` entries with `at` at or before the MetricKit payload’s `timeStampEnd` (oldest first). MetricKit does not timestamp each crash; the payload covers a reporting window. Screens recorded after that window, including navigation on a later launch, are left out. The prop is omitted when nothing was recorded before that time. Consecutive duplicate names are not stored.
 
 **Limits (Worker):** body ≤ 256 KB; ≤ 100 events; each `props` JSON ≤ 8192 bytes; `device_id` / event `id` / `name` 1–128 chars.
 
@@ -627,8 +629,8 @@ Anything you put in `track(_:_:)` names and props is stored as analytics. The pa
 
 With `reportsCrashes` (default **on**), MetricKit may later send:
 
-- `app_crash` — Mach exception type/code/name, signal name, termination reason and (iOS 17+) Objective-C/Swift exception message, marketing version + build, unsybolicated `stack`, app-only `stack_app` with binary UUID
-- `app_hang` — hang duration, version, build, same style of stack
+- `app_crash` — Mach exception type/code/name, signal name, termination reason and (iOS 17+) Objective-C/Swift exception message, marketing version + build, unsybolicated `stack`, app-only `stack_app` with binary UUID, and `screens` (last five visible screens with timestamps, when the host app records them)
+- `app_hang` — hang duration, version, build, same style of stack and `screens`
 
 `stack` is truncated on a frame boundary (~4 KB / 48 frames). `stack_truncated` is set when frames or bytes were dropped. Turn this off with `reportsCrashes: false` if a given app should not collect crash diagnostics.
 

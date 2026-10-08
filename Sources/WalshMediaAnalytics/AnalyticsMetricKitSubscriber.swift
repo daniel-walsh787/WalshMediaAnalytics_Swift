@@ -23,6 +23,9 @@ final class AnalyticsMetricKitSubscriber: NSObject, MXMetricManagerSubscriber {
 
     private static func mappedEvents(from payload: MXDiagnosticPayload) -> [AnalyticsCrashMapper.MappedEvent] {
         let appBinaryName = AnalyticsDeviceInfo.appBinaryName()
+        // MetricKit dates the whole payload, not each crash. Screens recorded after
+        // `timeStampEnd` (including navigation on a later launch) are excluded.
+        let screens = AnalyticsDiagnosticContext.screensJSON(atOrBefore: payload.timeStampEnd)
         var events: [AnalyticsCrashMapper.MappedEvent] = []
         for crash in payload.crashDiagnostics ?? [] {
             events.append(
@@ -35,7 +38,8 @@ final class AnalyticsMetricKitSubscriber: NSObject, MXMetricManagerSubscriber {
                     version: crash.applicationVersion,
                     build: crash.metaData.applicationBuildVersion,
                     callStackJSON: crash.callStackTree.jsonRepresentation(),
-                    appBinaryName: appBinaryName
+                    appBinaryName: appBinaryName,
+                    screens: screens
                 )
             )
         }
@@ -46,7 +50,8 @@ final class AnalyticsMetricKitSubscriber: NSObject, MXMetricManagerSubscriber {
                     version: hang.applicationVersion,
                     build: hang.metaData.applicationBuildVersion,
                     callStackJSON: hang.callStackTree.jsonRepresentation(),
-                    appBinaryName: appBinaryName
+                    appBinaryName: appBinaryName,
+                    screens: screens
                 )
             )
         }

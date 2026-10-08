@@ -81,4 +81,15 @@ public enum Analytics {
             AnalyticsClient.shared.flushNow()
         }
     }
+
+    /// Record the screen the user is looking at. Crash and hang diagnostics later
+    /// include the last five screens whose timestamps are at or before the
+    /// MetricKit payload’s end time.
+    ///
+    /// Call this when the visible screen changes (tab, push, sheet). Consecutive
+    /// duplicates are ignored. The name should be a coarse path such as
+    /// `Logbook/Flight/Weather`, not a SwiftUI type name.
+    public static func setDiagnosticContext(screen: String) {
+        AnalyticsDiagnosticContext.record(screen: screen)
+    }
 }
